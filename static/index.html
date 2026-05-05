@@ -211,17 +211,14 @@ async function addStock() {
   btn.disabled = true
 
   try {
-    // 尝试获取名称，失败就用代码
-    const q = await api(`/api/quote?codes=${market}${code}`)
-    const name = (q && q[code] && q[code].name) ? q[code].name : code
-
-    const data = await apiPost('/api/watchlist', {code, market, name})
+    const data = await apiPost('/api/watchlist', {code, market, name: code})
     if (data) {
       state.watchlist = data
       document.getElementById('addCode').value = ''
       renderWatchlist()
     } else {
-      alert('添加失败，请检查网络或稍后重试')
+      const errText = document.getElementById('addCode').placeholder
+      alert('添加失败，服务器无响应。请检查 Railway 日志。')
     }
   } catch(e) {
     alert('添加失败: ' + e.message)
