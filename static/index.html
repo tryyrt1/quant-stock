@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>AI 量化选股系统</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f0f23;--card:#1a1a3e;--card2:#1e1e40;--text:#e0e0e0;--dim:#888;--accent:#00d2ff;--up:#ff4757;--down:#2ed573;--warn:#ffa502}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.5;-webkit-tap-highlight-color:transparent;overflow-x:hidden}
+.hide{display:none!important}
+
+/* Layout */
+.app{max-width:480px;margin:0 auto;padding-bottom:80px}
+.header{position:sticky;top:0;z-index:100;background:var(--bg);padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.header h1{font-size:19px;font-weight:700}
+.header h1 span{color:var(--accent)}
+.header .sub{font-size:11px;color:var(--dim);margin-top:2px}
+
+.card{background:linear-gradient(135deg,var(--card),var(--card2));border-radius:12px;margin:10px 12px;padding:14px 16px;box-shadow:0 2px 12px rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.05)}
+.card-title{font-size:14px;font-weight:600;color:#ccc;margin-bottom:10px}
+
+.disclaimer{text-align:center;color:var(--dim);font-size:11px;padding:12px 16px}
+
+/* Tabs */
+.tabbar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);z-index:100;background:#1a1a2e;border-top:1px solid rgba(255,255,255,.08);display:flex;max-width:480px;width:100%}
+.tab{flex:1;text-align:center;padding:8px 0 10px;font-size:10px;color:var(--dim);cursor:pointer;transition:color .2s}
+.tab.active{color:var(--accent)}
+.tab-icon{font-size:20px;display:block;margin-bottom:2px}
+
+/* Add Stock */
+.add-row{display:flex;gap:8px}
+.add-row input{flex:1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:10px 12px;color:#fff;font-size:14px;outline:none}
+.add-row input:focus{border-color:var(--accent)}
+.add-row input::placeholder{color:#555}
+.add-row select{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:10px 8px;color:#fff;font-size:13px;outline:none}
+.add-row button{background:var(--accent);border:none;border-radius:8px;padding:10px 16px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.add-row button:active{opacity:.8}
+
+/* Stock Cards */
+.stock-grid{display:flex;flex-direction:column;gap:0}
+.stock-card{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer}
+.stock-card:last-child{border-bottom:none}
+.sc-left{flex:1;margin-right:8px}
+.sc-name{font-size:15px;font-weight:600}
+.sc-code{font-size:11px;color:var(--dim);margin-left:6px}
+.sc-tags{margin-top:4px;display:flex;gap:4px}
+.sc-right{text-align:right}
+.sc-price{font-size:17px;font-weight:700;display:block}
+.sc-chg{font-size:11px}
+.sc-score{font-size:11px;color:var(--dim)}
+.up{color:var(--up)}
+.down{color:var(--down)}
+.flat{color:var(--dim)}
+
+/* Advice badges */
+.badge{display:inline-block;padding:2px 10px;border-radius:4px;font-size:11px;font-weight:600}
+.badge-buy{background:rgba(255,71,87,.15);color:var(--up);border:1px solid rgba(255,71,87,.3)}
+.badge-hold{background:rgba(0,210,255,.15);color:var(--accent);border:1px solid rgba(0,210,255,.3)}
+.badge-sell{background:rgba(255,165,2,.15);color:var(--warn);border:1px solid rgba(255,165,2,.3)}
+.badge-watch{background:rgba(136,136,136,.15);color:var(--dim);border:1px solid rgba(136,136,136,.3)}
+
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px}
+.tag-green{background:rgba(46,213,115,.15);color:var(--down)}
+
+/* Detail page */
+.detail-header{margin-bottom:10px}
+.dt-name{font-size:20px;font-weight:700}
+.dt-code{font-size:12px;color:var(--dim)}
+.dt-price{font-size:36px;font-weight:700}
+.dt-chg{font-size:16px;margin-left:8px}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.06)}
+.dg-item{text-align:center}
+.dg-label{font-size:10px;color:var(--dim);display:block;margin-bottom:2px}
+.dg-value{font-size:13px;font-weight:500}
+
+/* Score meter */
+.score-ring{width:80px;height:80px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 8px;font-size:28px;font-weight:700;position:relative}
+.score-ring::before{content:'';position:absolute;inset:4px;border-radius:50%;background:var(--card2)}
+
+/* Factor bars */
+.factor-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12px}
+.factor-label{width:50px;color:var(--dim)}
+.factor-bar-bg{flex:1;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.factor-bar-fill{height:100%;border-radius:3px;transition:width .5s}
+.factor-val{width:30px;text-align:right;font-weight:600}
+
+/* Indicators */
+.ind-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.ind-item{padding:8px;background:rgba(255,255,255,.03);border-radius:6px;text-align:center}
+.ind-label{font-size:10px;color:var(--dim)}
+.ind-value{font-size:14px;font-weight:600;margin-top:2px}
+
+/* News */
+.news-item{padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px;line-height:1.5}
+.news-item:last-child{border-bottom:none}
+.news-source{font-size:10px;color:var(--dim)}
+.news-sentiment{font-size:10px;margin-left:8px}
+
+/* Action buttons */
+.btn-row{display:flex;gap:8px}
+.btn{flex:1;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;text-align:center}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#3a7bd5);color:#fff}
+.btn-danger{background:rgba(255,71,87,.15);color:var(--up);border:1px solid rgba(255,71,87,.3)}
+.btn-secondary{background:rgba(255,255,255,.06);color:var(--dim);border:1px solid rgba(255,255,255,.1)}
+.btn:active{opacity:.8}
+
+/* Loading */
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Empty state */
+.empty{text-align:center;padding:40px 0;color:var(--dim)}
+.empty-icon{font-size:48px;margin-bottom:12px}
+
+/* Refresh bar */
+.refresh-bar{display:flex;justify-content:space-between;align-items:center;padding:4px 0}
+.refresh-bar .info{font-size:11px;color:var(--dim)}
+.refresh-bar button{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:4px 12px;color:#aaa;font-size:11px;cursor:pointer}
+
+/* Report section */
+.report-section{margin-bottom:14px}
+.report-section h3{font-size:13px;color:var(--dim);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid rgba(255,255,255,.04)}
+.report-advice{text-align:center;padding:16px 0}
+.report-reason{text-align:center;font-size:12px;color:#aaa;padding:0 16px 12px}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <div class="header">
+    <h1><span>AI</span> 量化选股 <span style="font-size:11px;color:var(--dim);font-weight:400">系统</span></h1>
+    <div class="sub">多因子分析 · 实时行情 · 建议报告</div>
+  </div>
+
+  <!-- ===== 自选股页 ===== -->
+  <div id="page-home">
+
+    <!-- 添加自选 -->
+    <div class="card">
+      <div class="card-title">➕ 添加自选股</div>
+      <div class="add-row">
+        <select id="addMarket"><option value="sh">沪</option><option value="sz">深</option></select>
+        <input id="addCode" placeholder="股票代码, 如 600519" maxlength="6" onkeydown="if(event.key==='Enter')addStock()">
+        <button onclick="addStock()">添加</button>
+      </div>
+      <div style="font-size:10px;color:#555;margin-top:4px">示例: 600519 贵州茅台, 000333 美的集团, 300750 宁德时代</div>
+    </div>
+
+    <!-- 扫描按钮 -->
+    <div class="card">
+      <div class="refresh-bar">
+        <span class="info" id="scanInfo">点击扫描分析自选股</span>
+        <button id="btnScan" onclick="scanWatchlist()">🔍 扫描分析</button>
+      </div>
+    </div>
+
+    <!-- 自选股列表 -->
+    <div id="stockListContainer"></div>
+  </div>
+
+  <!-- ===== 分析报告页 ===== -->
+  <div id="page-detail" class="hide">
+    <div style="padding:8px 12px">
+      <span style="color:var(--accent);font-size:13px;cursor:pointer" onclick="showHome()">← 返回列表</span>
+    </div>
+    <div id="reportContent"></div>
+  </div>
+
+  <div class="disclaimer">数据仅供参考，不构成投资建议 | 腾讯财经/东方财富</div>
+</div>
+
+<div class="tabbar">
+  <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
+  <div class="tab" data-tab="detail" onclick="switchTab('detail')"><span class="tab-icon">📋</span>分析报告</div>
+</div>
+
+<script>
+// ===================== State =====================
+let state = { watchlist: [], results: [], detailStock: null }
+let scanning = false
+
+// ===================== API =====================
+async function api(url) {
+  try { const r=await fetch(url); return await r.json() }
+  catch(e){ console.error(e); return null }
+}
+
+async function apiPost(url, data) {
+  try {
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+    return await r.json()
+  } catch(e){ console.error(e); return null }
+}
+
+// ===================== Watchlist =====================
+async function loadWatchlist() {
+  const data = await api('/api/watchlist')
+  if (data) state.watchlist = data
+  renderWatchlist()
+}
+
+async function addStock() {
+  const code = document.getElementById('addCode').value.trim()
+  const market = document.getElementById('addMarket').value
+  if (!code || code.length < 4) { alert('请输入正确的股票代码'); return }
+
+  // 先获取名称
+  const q = await api(`/api/quote?codes=${market}${code}`)
+  const name = (q && q[code] && q[code].name) ? q[code].name : code
+
+  const data = await apiPost('/api/watchlist', {code, market, name})
+  if (data) {
+    state.watchlist = data
+    document.getElementById('addCode').value = ''
+    renderWatchlist()
+  }
+}
+
+async function removeStock(code, market) {
+  const data = await api(`/api/watchlist?code=${code}&market=${market}`, 'DELETE')
+  // Use fetch directly for DELETE
+  try {
+    const r = await fetch(`/api/watchlist?code=${code}&market=${market}`, {method:'DELETE'})
+    const d = await r.json()
+    state.watchlist = d
+    renderWatchlist()
+  } catch(e) {}
+}
+
+// ===================== Scan =====================
+async function scanWatchlist() {
+  if (scanning) return
+  if (state.watchlist.length === 0) { alert('请先添加自选股'); return }
+
+  scanning = true
+  document.getElementById('btnScan').innerHTML = '<span class="spinner"></span>分析中...'
+  document.getElementById('btnScan').disabled = true
+
+  const data = await api('/api/scan')
+  if (data && data.results) {
+    state.results = data.results
+    document.getElementById('scanInfo').textContent = `上次分析: ${new Date().toLocaleTimeString()} | ${data.count} 只股票`
+  }
+
+  renderWatchlist()
+  scanning = false
+  document.getElementById('btnScan').innerHTML = '🔍 扫描分析'
+  document.getElementById('btnScan').disabled = false
+}
+
+// ===================== Render =====================
+function renderWatchlist() {
+  const el = document.getElementById('stockListContainer')
+  const wl = state.watchlist
+  const results = state.results
+
+  if (wl.length === 0) {
+    el.innerHTML = `<div class="empty"><div class="empty-icon">📈</div><div style="font-size:13px">暂无自选股</div><div style="font-size:11px;color:#555;margin-top:4px">在上方输入股票代码添加</div></div>`
+    return
+  }
+
+  // Build result lookup
+  const resultMap = {}
+  results.forEach(r => { resultMap[r.code] = r })
+
+  el.innerHTML = wl.map(s => {
+    const r = resultMap[s.code] || {}
+    const chgCls = r.changePercent > 0 ? 'up' : r.changePercent < 0 ? 'down' : 'flat'
+    const badgeCls = r.advice === '买入' ? 'badge-buy' : r.advice === '卖出' ? 'badge-sell' : r.advice === '持有' ? 'badge-hold' : 'badge-watch'
+
+    return `<div class="card" style="cursor:pointer" onclick='loadDetail("${s.code}","${s.market}")'>
+      <div class="stock-card" style="border:none;padding:4px 0">
+        <div class="sc-left">
+          <div><span class="sc-name">${r.name || s.name}</span><span class="sc-code">${s.market==='sh'?'SH':'SZ'}.${s.code}</span></div>
+          <div class="sc-tags">
+            ${r.advice ? `<span class="badge ${badgeCls}">${r.advice}</span>` : ''}
+            ${r.score ? `<span class="sc-score">评分 ${r.score}</span>` : ''}
+          </div>
+        </div>
+        <div class="sc-right">
+          <span class="sc-price ${chgCls}">${r.price ? r.price.toFixed(2) : '--'}</span>
+          <span class="sc-chg ${chgCls}">${r.changePercent ? (r.changePercent>=0?'+':'')+r.changePercent.toFixed(2)+'%' : ''}</span>
+        </div>
+      </div>
+      <div style="text-align:right;padding-top:6px;border-top:1px solid rgba(255,255,255,.04)">
+        <span style="font-size:10px;color:var(--dim);cursor:pointer" onclick="event.stopPropagation();removeStock('${s.code}','${s.market}')">✕ 删除</span>
+      </div>
+    </div>`
+  }).join('')
+}
+
+// ===================== Detail / Report =====================
+async function loadDetail(code, market) {
+  showDetail()
+  document.getElementById('reportContent').innerHTML = `<div class="card"><div class="loading" style="text-align:center;padding:40px"><span class="spinner"></span>加载分析数据...</div></div>`
+
+  const data = await api(`/api/stock/${code}?market=${market}`)
+  if (!data) {
+    document.getElementById('reportContent').innerHTML = '<div class="card" style="text-align:center;padding:40px;color:var(--dim)">获取数据失败</div>'
+    return
+  }
+
+  renderReport(data)
+}
+
+function renderReport(data) {
+  const q = data.quote || {}
+  const f = data.factors || {}
+  const k = data.kline || []
+  const ind = data.indicators || {}
+  const news = data.news || []
+  const chgCls = q.changePercent > 0 ? 'up' : q.changePercent < 0 ? 'down' : 'flat'
+  const adviceCls = f.advice === '买入' ? 'badge-buy' : f.advice === '卖出' ? 'badge-sell' : f.advice === '持有' ? 'badge-hold' : 'badge-watch'
+
+  // S/R data
+  const sr = data.sr || {}
+
+  // Score ring color (use adjusted_score if available)
+  const displayScore = f.adjusted_score != null ? f.adjusted_score : f.score
+  let scoreColor = '#888'
+  if (displayScore >= 68) scoreColor = '#ff4757'
+  else if (displayScore >= 55) scoreColor = '#00d2ff'
+  else if (displayScore >= 40) scoreColor = '#ffa502'
+  else scoreColor = '#2ed573'
+
+  // Factor levels
+  const levels = f.levels || {}
+  const radarHtml = Object.entries(levels).map(([k,v]) => {
+    const pct = Math.min(100, Math.max(0, v))
+    const cl = pct >= 65 ? '#ff4757' : pct >= 45 ? '#00d2ff' : '#ffa502'
+    return `<div class="factor-row"><span class="factor-label">${k}</span><div class="factor-bar-bg"><div class="factor-bar-fill" style="width:${pct}%;background:${cl}"></div></div><span class="factor-val" style="color:${cl}">${pct}</span></div>`
+  }).join('')
+
+  // Indicators
+  const indHtml = Object.entries({
+    'RSI(14)': ind.rsi, 'MACD': ind.macd, 'DIF': ind.macd_dif, 'DEA': ind.macd_dea,
+    'MA5': ind.ma5, 'MA20': ind.ma20, 'MA60': ind.ma60
+  }).filter(([,v]) => v != null).map(([k,v]) =>
+    `<div class="ind-item"><div class="ind-label">${k}</div><div class="ind-value">${typeof v === 'number' ? v.toFixed(2) : v}</div></div>`
+  ).join('')
+
+  // News
+  const newsHtml = news.map(n => {
+    const sentCls = n.sentiment === 'positive' ? 'up' : n.sentiment === 'negative' ? 'down' : 'flat'
+    const label = n.sentiment === 'positive' ? '利好' : n.sentiment === 'negative' ? '利空' : '中性'
+    return `<div class="news-item">${n.title}<div><span class="news-source">${n.source}</span><span class="news-sentiment ${sentCls}">${label}</span></div></div>`
+  }).join('') || '<div style="font-size:12px;color:var(--dim);padding:8px">暂无新闻数据</div>'
+
+  // 最近行情概览
+  let klineSummary = ''
+  if (k.length > 1) {
+    const first = k[0], last = k[k.length-1]
+    const chg60 = ((last.close - first.close) / first.close * 100).toFixed(1)
+    const hi = Math.max(...k.map(x=>x.high)).toFixed(2)
+    const lo = Math.min(...k.map(x=>x.low)).toFixed(2)
+    klineSummary = `<div class="factor-row"><span class="factor-label">60日</span><span style="font-size:12px;color:var(--dim)">涨幅 ${chg60}% | 最高 ${hi} | 最低 ${lo}</span></div>`
+  }
+
+  const html = `
+    <!-- 行情头部 -->
+    <div class="card">
+      <div class="detail-header">
+        <div class="dt-name">${q.name || data.code}<span class="dt-code"> ${data.market==='sh'?'SH':'SZ'}.${data.code}</span></div>
+        <div><span class="dt-price ${chgCls}">${q.price ? q.price.toFixed(2) : '--'}</span><span class="dt-chg ${chgCls}">${q.changePercent ? (q.changePercent>=0?'+':'')+q.changePercent.toFixed(2)+'%' : ''}</span></div>
+      </div>
+      <div class="detail-grid">
+        <div class="dg-item"><span class="dg-label">今开</span><span class="dg-value">${q.open ? q.open.toFixed(2) : '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">昨收</span><span class="dg-value">${q.yesterdayClose ? q.yesterdayClose.toFixed(2) : '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">最高</span><span class="dg-value up">${q.high ? q.high.toFixed(2) : '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">最低</span><span class="dg-value down">${q.low ? q.low.toFixed(2) : '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">成交量</span><span class="dg-value">${fmtVol(q.volume)}</span></div>
+        <div class="dg-item"><span class="dg-label">市盈率</span><span class="dg-value">${q.pe ? q.pe.toFixed(2) : '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">市净率</span><span class="dg-value">${q.pb ? q.pb.toFixed(2) : '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">换手率</span><span class="dg-value">${q.turnover ? q.turnover.toFixed(2)+'%' : '--'}</span></div>
+      </div>
+    </div>
+
+    <!-- 综合建议报告 -->
+    <div class="card">
+      <div class="card-title">📊 多因子分析报告</div>
+      <div class="report-section">
+        <div class="report-advice">
+          <div class="score-ring" style="border:4px solid ${scoreColor}">
+            <span style="position:relative;z-index:1">${displayScore || '--'}</span>
+          </div>
+          <div style="font-size:11px;color:var(--dim);margin-bottom:4px">综合评分 ${f.sr_boost ? (f.sr_boost > 0 ? '📈+' : '📉') + f.sr_boost : ''}</div>
+          <span class="badge ${adviceCls}" style="font-size:16px;padding:4px 20px">${f.advice || '--'}</span>
+        </div>
+        <div class="report-reason">${f.reason || ''}</div>
+      </div>
+
+      <div class="report-section">
+        <h3>各维度评分</h3>
+        ${radarHtml}
+      </div>
+
+      <div class="report-section">
+        <h3>60日走势概览</h3>
+        ${klineSummary}
+      </div>
+    </div>
+
+    <!-- 压力位/支撑位 -->
+    <div class="card">
+      <div class="card-title">📊 压力位 &amp; 支撑位</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="background:rgba(255,71,87,.08);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">压力位 R2</div>
+          <div class="up" style="font-size:20px;font-weight:700">${sr.R2 ? sr.R2.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(255,71,87,.05);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">压力位 R1</div>
+          <div class="up" style="font-size:20px;font-weight:700">${sr.R1 ? sr.R1.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(0,0,0,.2);border-radius:8px;padding:10px;text-align:center;border:1px solid rgba(255,255,255,.08)">
+          <div style="font-size:10px;color:var(--dim)">当前价</div>
+          <div style="font-size:22px;font-weight:700">${q.price ? q.price.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(255,255,255,.03);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">枢轴点</div>
+          <div class="warn" style="font-size:18px;font-weight:600">${sr.Pivot ? sr.Pivot.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(46,213,115,.05);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">支撑位 S1</div>
+          <div class="down" style="font-size:20px;font-weight:700">${sr.S1 ? sr.S1.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(46,213,115,.08);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">支撑位 S2</div>
+          <div class="down" style="font-size:20px;font-weight:700">${sr.S2 ? sr.S2.toFixed(2) : '--'}</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.04)">
+        <div class="factor-row"><span class="factor-label">最近压力</span><span class="up" style="font-size:15px;font-weight:700">${sr.nearest_resistance ? sr.nearest_resistance.toFixed(2) : '--'}</span><span style="font-size:11px;color:var(--dim)">距离 ${sr.dist_to_resistance != null ? sr.dist_to_resistance.toFixed(1)+'%' : '--'} | 强度 ${sr.resistance_strength || '--'}</span></div>
+        <div class="factor-row"><span class="factor-label">最近支撑</span><span class="down" style="font-size:15px;font-weight:700">${sr.nearest_support ? sr.nearest_support.toFixed(2) : '--'}</span><span style="font-size:11px;color:var(--dim)">距离 ${sr.dist_to_support != null ? sr.dist_to_support.toFixed(1)+'%' : '--'} | 强度 ${sr.support_strength || '--'}</span></div>
+        <div class="factor-row"><span class="factor-label">MA20(动态)</span><span style="font-size:13px;color:var(--accent)">${sr.ma20 != null ? sr.ma20.toFixed(2) : '--'}</span><span style="font-size:11px;color:var(--dim)">MA60: ${sr.ma60 != null ? sr.ma60.toFixed(2) : '--'}</span></div>
+      </div>
+      <div style="margin-top:6px;font-size:11px;color:var(--dim);text-align:center">
+        ${sr.nearest_support && q.price ? (q.price <= sr.nearest_support * 1.03 ? '📍 价格接近支撑位，可关注买入机会' : '') : ''}
+        ${sr.nearest_resistance && q.price ? (q.price >= sr.nearest_resistance * 0.97 ? '📍 价格接近压力位，注意回调风险' : '') : ''}
+        ${sr.nearest_resistance && sr.nearest_support && q.price ? (q.price > sr.nearest_support * 1.03 && q.price < sr.nearest_resistance * 0.97 ? '📊 价格在支撑与压力之间，趋势未明' : '') : ''}
+      </div>
+    </div>
+
+    <!-- 技术指标 -->
+    <div class="card">
+      <div class="card-title">📐 技术指标</div>
+      <div class="ind-grid">${indHtml}</div>
+    </div>
+
+    <!-- 新闻与情绪 -->
+    <div class="card">
+      <div class="card-title">📰 相关新闻 <span style="font-size:11px;color:var(--dim);font-weight:400">| 情绪: ${data.sentiment > 0 ? '积极' : data.sentiment < 0 ? '消极' : '中性'} (${(data.sentiment*100).toFixed(0)})</span></div>
+      ${newsHtml}
+    </div>
+
+    <!-- 操作 -->
+    <div class="card">
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="showHome()">← 返回列表</button>
+        <button class="btn btn-danger" onclick="removeStock('${data.code}','${data.market}')">✕ 删除自选</button>
+      </div>
+    </div>
+  `
+
+  document.getElementById('reportContent').innerHTML = html
+}
+
+// ===================== Navigation =====================
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab))
+  document.getElementById('page-home').classList.toggle('hide',tab!=='home')
+  document.getElementById('page-detail').classList.toggle('hide',tab!=='detail')
+}
+function showHome() { switchTab('home') }
+function showDetail() { switchTab('detail') }
+
+function fmtVol(v) {
+  if (!v || isNaN(v)) return '--'
+  if (v >= 10000) return (v/10000).toFixed(2) + '万'
+  return v.toFixed(0)
+}
+
+// ===================== Init =====================
+loadWatchlist()
+// Auto-refresh every 30 seconds
+setInterval(scanWatchlist, 30000)
+</script>
+</body>
+</html>
