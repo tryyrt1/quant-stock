@@ -11,6 +11,12 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 WATCHLIST_FILE = os.path.join(DATA_DIR, 'watchlist.json')
 REALTIME_CACHE = {}  # {code: {data, time}}
 
+# 确保数据目录和自选股文件存在 (gunicorn 下也会执行)
+os.makedirs(DATA_DIR, exist_ok=True)
+if not os.path.exists(WATCHLIST_FILE):
+    with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
+        json.dump([], f)
+
 # =================== 工具函数 ===================
 
 def load_watchlist():
@@ -235,12 +241,6 @@ def scan_watchlist():
 # =================== 启动 ===================
 
 if __name__ == '__main__':
-    # 确保数据目录存在
-    os.makedirs(DATA_DIR, exist_ok=True)
-    if not os.path.exists(WATCHLIST_FILE):
-        with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
-            json.dump([], f)
-
     port = int(os.environ.get('PORT', 8080))
     ip = get_local_ip()
     print(f'=== AI 量化选股系统 ===')
