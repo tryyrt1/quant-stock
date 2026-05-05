@@ -205,15 +205,29 @@ async function addStock() {
   const market = document.getElementById('addMarket').value
   if (!code || code.length < 4) { alert('请输入正确的股票代码'); return }
 
-  // 先获取名称
-  const q = await api(`/api/quote?codes=${market}${code}`)
-  const name = (q && q[code] && q[code].name) ? q[code].name : code
+  const btn = document.querySelector('.add-row button')
+  const origText = btn.textContent
+  btn.textContent = '添加中...'
+  btn.disabled = true
 
-  const data = await apiPost('/api/watchlist', {code, market, name})
-  if (data) {
-    state.watchlist = data
-    document.getElementById('addCode').value = ''
-    renderWatchlist()
+  try {
+    // 尝试获取名称，失败就用代码
+    const q = await api(`/api/quote?codes=${market}${code}`)
+    const name = (q && q[code] && q[code].name) ? q[code].name : code
+
+    const data = await apiPost('/api/watchlist', {code, market, name})
+    if (data) {
+      state.watchlist = data
+      document.getElementById('addCode').value = ''
+      renderWatchlist()
+    } else {
+      alert('添加失败，请检查网络或稍后重试')
+    }
+  } catch(e) {
+    alert('添加失败: ' + e.message)
+  } finally {
+    btn.textContent = origText
+    btn.disabled = false
   }
 }
 
