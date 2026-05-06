@@ -347,9 +347,9 @@ def scan_market_api():
         return jsonify({'error': '获取股票列表失败', 'patterns': []}), 500
 
     total = len(stocks)
-    # 按成交量排序，取前200只最活跃的
+    # 按成交量排序，取前200只最活跃的，排除涨停/涨幅过大的
     stocks.sort(key=lambda x: abs(x.get('volume', 0)), reverse=True)
-    candidates = stocks[:200]
+    candidates = [s for s in stocks[:300] if (s.get('change_pct', 0) or 0) < 7][:200]
 
     import concurrent.futures
     def fetch_kline_for_stock(s):
