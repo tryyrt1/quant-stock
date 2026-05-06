@@ -5,6 +5,7 @@ from flask import Flask, jsonify, request, Response, send_from_directory
 from engine.indicators import *
 from engine.factors import analyze_factors
 from engine.news import fetch_news, analyze_sentiment
+from engine.patterns import scan_patterns
 
 app = Flask(__name__, static_folder='static')
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
@@ -236,6 +237,59 @@ def scan_watchlist():
 
     results.sort(key=lambda x: x['score'], reverse=True)
     return jsonify({'results': results, 'count': len(results)})
+
+
+@app.route('/api/scan/patterns', methods=['POST'])
+def scan_patterns_api():
+    """扫描自选股，识别技术形态/选股模式"""
+    wl = load_watchlist()
+    if not wl:
+        return jsonify({'patterns': [], 'message': '自选股列表为空'})
+
+    import concurrent.futures
+
+    def fetch_with_code(s):
+        full = s['market'] + s['code']
+        try:
+            k = fetch_kline(full, 120)
+            return s['code'], s['market'], s.get('name', s['code']), k
+        except:
+            return s['code'], s['market'], s.get('name', s['code']), []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
+        kline_results = list(exe.map(fetch_with_code, wl))
+
+    # 构建 klines_all dict
+    klines_all = {}
+    code_info = {}
+    for code, market, name, k in kline_results:
+        if len(k) >= 60:
+            klines_all[f'{market}{code}'] = k
+            code_info[f'{market}{code}'] = {'code': code, 'market': market, 'name': name}
+
+    raw = scan_patterns(klines_all)
+
+    # 格式化输出
+    patterns_out = []
+    for full_code, matches in raw.items():
+        info = code_info.get(full_code, {})
+        for m in matches:
+            patterns_out.append({
+                'code': info.get('code', full_code),
+                'market': info.get('market', 'sh'),
+                'name': info.get('name', full_code),
+                'pattern_key': m['key'],
+                'pattern_name': m['name'],
+                'label': m['info'].get('label', ''),
+                'detail': {k: v for k, v in m['info'].items() if k != 'label'},
+            })
+
+    # 按模式名称分组
+    return jsonify({
+        'patterns': patterns_out,
+        'count': len(patterns_out),
+        'stocks_matched': len(raw),
+    })
 
 
 # =================== 启动 ===================
