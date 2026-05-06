@@ -336,13 +336,18 @@ function renderPatterns() {
 
     items.forEach(p => {
       const label = p.label || ''
-      const chgCls = p.detail && p.detail.total_gain > 0 ? 'up' : 'down'
+      const riskTag = p.risk ? `<span class="tag" style="background:rgba(255,71,87,.2);color:var(--up);font-weight:700;margin-left:4px">${p.risk}</span>` : ''
+      const chgStr = p.change_pct != null ? `${p.change_pct >= 0 ? '+' : ''}${p.change_pct}%` : ''
+      const chgCls = p.change_pct > 0 ? 'up' : 'down'
       html += `<div class="stock-card" style="cursor:pointer" onclick='loadDetail("${p.code}","${p.market}")'>
         <div class="sc-left">
-          <div><span class="sc-name">${p.name}</span><span class="sc-code">${p.market.toUpperCase()}.${p.code}</span></div>
+          <div><span class="sc-name">${p.name}</span><span class="sc-code">${p.market.toUpperCase()}.${p.code}</span>${riskTag}</div>
           <div style="font-size:10px;color:#888;margin-top:2px">${label}</div>
         </div>
-        <div style="font-size:10px;color:var(--accent)">查看 →</div>
+        <div class="sc-right">
+          <span class="sc-price ${chgCls}">${chgStr}</span>
+          <div style="font-size:10px;color:var(--accent)">详情 →</div>
+        </div>
       </div>`
     })
 

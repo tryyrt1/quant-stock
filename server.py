@@ -329,9 +329,10 @@ def fetch_a_share_list():
         if price <= 0 or volume <= 0: continue
         if price < 2 or price > 200: continue
 
+        change_pct = item.get('f3', 0) or 0
         market = 'sh' if code.startswith('6') else 'sz'
         stocks.append({'code': code, 'market': market, 'name': name,
-                       'price': price, 'volume': volume})
+                       'price': price, 'volume': volume, 'change_pct': change_pct})
 
     _STOCK_LIST_CACHE['time'] = now
     _STOCK_LIST_CACHE['data'] = stocks
@@ -368,10 +369,17 @@ def scan_market_api():
             klines_all[f'{market}{code}'] = k
             code_info[f'{market}{code}'] = {'code': code, 'market': market, 'name': name}
 
+    candidate_lookup = {s['code']: s for s in candidates}
+
     raw = scan_patterns(klines_all)
     patterns_out = []
     for full_code, matches in raw.items():
         info = code_info.get(full_code, {})
+        cand = candidate_lookup.get(info.get('code', ''), {})
+        chg = cand.get('change_pct', 0) or 0
+        risk = ''
+        if chg >= 9.5: risk = '涨停'
+        elif chg >= 7: risk = '涨幅过大'
         for m in matches:
             patterns_out.append({
                 'code': info.get('code', full_code),
@@ -380,6 +388,8 @@ def scan_market_api():
                 'pattern_key': m['key'],
                 'pattern_name': m['name'],
                 'label': m['info'].get('label', ''),
+                'risk': risk,
+                'change_pct': round(chg, 2),
                 'detail': {k: v for k, v in m['info'].items() if k != 'label'},
             })
 
