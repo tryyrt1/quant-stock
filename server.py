@@ -6,6 +6,7 @@ from engine.indicators import *
 from engine.factors import analyze_factors
 from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
+from engine.stock_list import STOCKS as STATIC_STOCKS
 
 app = Flask(__name__, static_folder='static')
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
@@ -312,27 +313,32 @@ def fetch_a_share_list():
     try:
         r = req.get(url, params=params, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
         data = r.json()
+        items = data.get('data', {}).get('diff', [])
     except:
-        return _STOCK_LIST_CACHE['data'] or []
+        items = []
 
     stocks = []
-    for item in data.get('data', {}).get('diff', []):
+    for item in items:
         code = str(item.get('f12', ''))
         name = str(item.get('f14', ''))
         price = item.get('f2')
         if price is None: continue
         price = float(price)
         volume = item.get('f5', 0) or 0
+        if price <= 0 or volume <= 0: continue
 
         if code.startswith('3') or code.startswith('688'): continue
         if 'ST' in name.upper() or '*' in name.upper(): continue
-        if price <= 0 or volume <= 0: continue
         if price < 2 or price > 200: continue
 
         change_pct = item.get('f3', 0) or 0
         market = 'sh' if code.startswith('6') else 'sz'
         stocks.append({'code': code, 'market': market, 'name': name,
                        'price': price, 'volume': volume, 'change_pct': change_pct})
+
+    # API获取失败时使用内置股票名单
+    if not stocks:
+        stocks = [dict(s, price=10, volume=1000000, change_pct=0) for s in STATIC_STOCKS]
 
     _STOCK_LIST_CACHE['time'] = now
     _STOCK_LIST_CACHE['data'] = stocks
