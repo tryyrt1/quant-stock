@@ -292,6 +292,106 @@ def scan_patterns_api():
     })
 
 
+# 全市场股票列表缓存 (5分钟)
+_STOCK_LIST_CACHE = {'time': 0, 'data': []}
+
+def fetch_a_share_list():
+    """从东方财富获取全A股列表，排除创业板/科创板/ST"""
+    now = time.time()
+    if now - _STOCK_LIST_CACHE['time'] < 300 and _STOCK_LIST_CACHE['data']:
+        return _STOCK_LIST_CACHE['data']
+
+    url = 'http://push2.eastmoney.com/api/qt/clist/get'
+    params = {
+        'pn': 1, 'pz': 10000, 'po': 1, 'np': 1,
+        'fltt': 2, 'invt': 2, 'fid': 'f3',
+        'fs': 'm:0+t:6,m:0+t:13,m:1+t:2,m:1+t:23',
+        'fields': 'f12,f14,f2,f3,f5,f20'
+    }
+    import requests as req
+    try:
+        r = req.get(url, params=params, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+        data = r.json()
+    except:
+        return _STOCK_LIST_CACHE['data'] or []
+
+    stocks = []
+    for item in data.get('data', {}).get('diff', []):
+        code = str(item.get('f12', ''))
+        name = str(item.get('f14', ''))
+        price = item.get('f2')
+        if price is None: continue
+        price = float(price)
+        volume = item.get('f5', 0) or 0
+
+        if code.startswith('3') or code.startswith('688'): continue
+        if 'ST' in name.upper() or '*' in name.upper(): continue
+        if price <= 0 or volume <= 0: continue
+        if price < 2 or price > 200: continue
+
+        market = 'sh' if code.startswith('6') else 'sz'
+        stocks.append({'code': code, 'market': market, 'name': name,
+                       'price': price, 'volume': volume})
+
+    _STOCK_LIST_CACHE['time'] = now
+    _STOCK_LIST_CACHE['data'] = stocks
+    return stocks
+
+
+@app.route('/api/scan/market', methods=['POST'])
+def scan_market_api():
+    """全市场形态扫描 - 排除创业板/科创板/ST"""
+    stocks = fetch_a_share_list()
+    if not stocks:
+        return jsonify({'error': '获取股票列表失败', 'patterns': []}), 500
+
+    total = len(stocks)
+    # 按成交量排序，取前200只最活跃的
+    stocks.sort(key=lambda x: abs(x.get('volume', 0)), reverse=True)
+    candidates = stocks[:200]
+
+    import concurrent.futures
+    def fetch_kline_for_stock(s):
+        try:
+            k = fetch_kline(s['market'] + s['code'], 120)
+            return s['code'], s['market'], s['name'], k
+        except:
+            return s['code'], s['market'], s['name'], []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
+        kline_results = list(exe.map(fetch_kline_for_stock, candidates))
+
+    klines_all = {}
+    code_info = {}
+    for code, market, name, k in kline_results:
+        if len(k) >= 60:
+            klines_all[f'{market}{code}'] = k
+            code_info[f'{market}{code}'] = {'code': code, 'market': market, 'name': name}
+
+    raw = scan_patterns(klines_all)
+    patterns_out = []
+    for full_code, matches in raw.items():
+        info = code_info.get(full_code, {})
+        for m in matches:
+            patterns_out.append({
+                'code': info.get('code', full_code),
+                'market': info.get('market', 'sh'),
+                'name': info.get('name', full_code),
+                'pattern_key': m['key'],
+                'pattern_name': m['name'],
+                'label': m['info'].get('label', ''),
+                'detail': {k: v for k, v in m['info'].items() if k != 'label'},
+            })
+
+    return jsonify({
+        'patterns': patterns_out,
+        'count': len(patterns_out),
+        'stocks_matched': len(raw),
+        'total_scanned': total,
+        'candidates': len(candidates),
+    })
+
+
 # =================== 启动 ===================
 
 if __name__ == '__main__':
