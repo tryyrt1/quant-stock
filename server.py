@@ -579,11 +579,39 @@ def scan_patterns_api():
 _STOCK_LIST_CACHE = {'time': 0, 'data': []}
 
 def fetch_a_share_list():
-    """从东方财富获取全A股列表，排除创业板/科创板/ST"""
+    """获取全A股列表（优先用本地文件），排除创业板/科创板/ST"""
     now = time.time()
     if now - _STOCK_LIST_CACHE['time'] < 300 and _STOCK_LIST_CACHE['data']:
         return _STOCK_LIST_CACHE['data']
 
+    # 优先用本地保存的 all_stocks.json（5512只）
+    local_file = os.path.join(DATA_DIR, 'all_stocks.json')
+    if os.path.exists(local_file):
+        try:
+            with open(local_file, 'r', encoding='utf-8') as f:
+                all_stocks = json.load(f)
+            stocks = []
+            for s in all_stocks:
+                code = str(s.get('code', ''))
+                name = str(s.get('name', ''))
+                if s.get('market') == 'bj': continue  # 排除北交所
+                if code.startswith('3') or code.startswith('688'): continue
+                if 'ST' in name.upper() or '*' in name.upper(): continue
+                market = 'sh' if code.startswith('6') else 'sz'
+                stocks.append({'code': code, 'market': market, 'name': name,
+                               'price': float(s.get('price', 10) or 10),
+                               'volume': int(s.get('volume', 0) or 0),
+                               'change_pct': float(s.get('change_pct', 0) or 0),
+                               'pe': float(s.get('pe', 0) or 0)})
+            if len(stocks) >= 1000:
+                _STOCK_LIST_CACHE['time'] = now
+                _STOCK_LIST_CACHE['data'] = stocks
+                print(f"  [fetch_a_share_list] loaded {len(stocks)} stocks from local file")
+                return stocks
+        except Exception as e:
+            print(f"  [fetch_a_share_list] local file error: {e}")
+
+    # 本地文件不可用时从API获取
     url = 'http://push2.eastmoney.com/api/qt/clist/get'
     params = {
         'pn': 1, 'pz': 10000, 'po': 1, 'np': 1,
@@ -608,18 +636,15 @@ def fetch_a_share_list():
         price = float(price)
         volume = item.get('f5', 0) or 0
         if price <= 0 or volume <= 0: continue
-
         if code.startswith('3') or code.startswith('688'): continue
         if 'ST' in name.upper() or '*' in name.upper(): continue
         if price < 2 or price > 200: continue
-
         change_pct = item.get('f3', 0) or 0
         pe = item.get('f9', 0) or 0
         market = 'sh' if code.startswith('6') else 'sz'
         stocks.append({'code': code, 'market': market, 'name': name,
                        'price': price, 'volume': volume, 'change_pct': change_pct, 'pe': pe})
 
-    # API获取失败时使用内置股票名单
     if len(stocks) < 500:
         stocks = [{"code":s[0],"market":s[1],"name":s[2],"price":10,"volume":1000000,"change_pct":0,"pe":0} for s in STATIC_STOCKS]
 
@@ -761,8 +786,8 @@ def export_scan():
     csv_bytes = output.getvalue()
     output.close()
     return Response(
-        csv_bytes,
-        mimetype='text/csv; charset=utf-8-sig',
+        csv_bytes.encode('utf-8-sig'),
+        mimetype='text/csv',
         headers={'Content-Disposition': 'attachment; filename=scan_results.csv'}
     )
 
@@ -843,8 +868,8 @@ def export_market():
     csv_bytes = output.getvalue()
     output.close()
     return Response(
-        csv_bytes,
-        mimetype='text/csv; charset=utf-8-sig',
+        csv_bytes.encode('utf-8-sig'),
+        mimetype='text/csv',
         headers={'Content-Disposition': 'attachment; filename=market_scan_results.csv'}
     )
 
@@ -896,10 +921,35 @@ def export_patterns():
     csv_bytes = output.getvalue()
     output.close()
     return Response(
-        csv_bytes,
-        mimetype='text/csv; charset=utf-8-sig',
+        csv_bytes.encode('utf-8-sig'),
+        mimetype='text/csv',
         headers={'Content-Disposition': 'attachment; filename=pattern_results.csv'}
     )
+
+
+@app.route('/dl/csv')
+def dl_csv_page():
+    """以HTML页面显示CSV内容，方便手机复制"""
+    import urllib.parse
+    text = "代码,名称,价格\n000001,测试股票,10.50\n"
+    html = f'''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>选股结果CSV</title><style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:sans-serif;background:#0f0f23;color:#e0e0e0;padding:16px}}
+h2{{font-size:16px;margin-bottom:10px;color:#00d2ff}}
+textarea{{width:100%;height:300px;background:#1a1a3e;color:#e0e0e0;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:12px;font-size:13px;font-family:monospace;resize:vertical}}
+.btn{{display:block;width:100%;padding:14px;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;text-align:center;margin:10px 0}}
+.btn-green{{background:#2ed573;color:#fff}}
+.btn-blue{{background:linear-gradient(135deg,#00d2ff,#3a7bd5);color:#fff}}
+.hint{{font-size:12px;color:#888;text-align:center;margin-top:8px}}
+</style></head><body>
+<h2>📋 选股结果</h2>
+<p style="font-size:12px;color:#888;margin-bottom:8px">点击textarea全选 → 复制 → 粘贴到WPS/Excel</p>
+<textarea id="csv" readonly onclick="this.select();document.getElementById('tip').textContent='已全选，请复制'">{text}</textarea>
+<button class="btn btn-green" onclick="var t=document.getElementById('csv');t.select();document.execCommand('copy');this.textContent='✅ 已复制!'">📋 一键复制</button>
+<p id="tip" class="hint">点击上方按钮或长按文本框复制内容</p>
+</body></html>'''
+    return Response(html, mimetype='text/html;charset=utf-8')
 
 
 # =================== 启动 ===================

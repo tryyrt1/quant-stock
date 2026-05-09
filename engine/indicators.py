@@ -84,6 +84,23 @@ def check_macd_gc(arr):
     l = len(d['dif'])
     return l>=3 and d['dif'][l-2]<=d['dea'][l-2] and d['dif'][l-1]>d['dea'][l-1]
 
+def calc_obv(klines):
+    """计算OBV(能量潮)指标, 返回OBV值列表"""
+    obv = []
+    cum = 0
+    for i in range(len(klines)):
+        if i == 0:
+            cum = klines[i]['volume']
+        else:
+            if klines[i]['close'] > klines[i-1]['close']:
+                cum += klines[i]['volume']
+            elif klines[i]['close'] < klines[i-1]['close']:
+                cum -= klines[i]['volume']
+            # 平盘不变
+        obv.append(cum)
+    return obv
+
+
 def calc_support_resistance(kline):
     """
     计算压力位和支撑位

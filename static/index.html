@@ -152,7 +152,6 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
       <div class="refresh-bar">
         <span class="info" id="scanInfo">点击扫描分析自选股</span>
         <button id="btnScan" onclick="scanWatchlist()">🔍 扫描分析</button>
-        <button onclick="window.open('/api/export/scan')" style="background:rgba(46,213,115,.15);border:1px solid rgba(46,213,115,.3);border-radius:6px;padding:4px 12px;color:#2ed573;font-size:11px;cursor:pointer;margin-left:4px">⬇ CSV</button>
       </div>
     </div>
 
@@ -189,11 +188,10 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
       <div class="refresh-bar" style="margin-bottom:6px">
         <span class="info" id="patternInfo">扫描自选股中的技术形态</span>
         <button id="btnPatternScan" onclick="scanPatterns()">📋 自选股</button>
-        <button onclick="window.open('/api/export/patterns')" style="background:rgba(46,213,115,.15);border:1px solid rgba(46,213,115,.3);border-radius:6px;padding:4px 12px;color:#2ed573;font-size:11px;cursor:pointer;margin-left:4px">⬇ CSV</button>
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" id="btnMarketScan" onclick="scanMarket()" style="font-size:12px">🌐 全市场扫描 (排除创业板/科创板/ST/亏损)</button>
-        <button class="btn btn-secondary" onclick="window.open('/api/export/market')" style="font-size:12px;flex:0.4">⬇ CSV</button>
+        <button onclick="copyPatternsCSV()" class="btn btn-secondary" style="font-size:12px;flex:0.4;background:rgba(46,213,115,.15);border:1px solid rgba(46,213,115,.3);color:#2ed573;line-height:36px">📋 CSV</button>
       </div>
       <div style="font-size:10px;color:#555;margin-top:4px" id="marketScanInfo"></div>
     </div>
@@ -201,6 +199,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   </div>
 
   <div class="disclaimer">数据仅供参考，不构成投资建议 | 腾讯财经/东方财富</div>
+  <div class="disclaimer" style="color:#555;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:0">China.柳州.Guoa</div>
 </div>
 
 <div class="tabbar">
@@ -363,6 +362,34 @@ function renderPatterns() {
   })
 
   el.innerHTML = html
+}
+
+// ===================== CSV 复制 =====================
+function copyPatternsCSV() {
+  var patterns = state.patterns || []
+  if (patterns.length === 0) {
+    alert('请先运行扫描，有结果后再导出')
+    return
+  }
+  var csv = '代码,名称,市场,模式,涨跌幅%,风险\n'
+  patterns.forEach(function(p) {
+    var chg = p.change_pct != null ? p.change_pct : ''
+    csv += p.code + ',' + p.name + ',' + (p.market||'') + ',' + p.pattern_name + ',' + chg + ',' + (p.risk||'') + '\n'
+  })
+  var ta = document.createElement('textarea')
+  ta.value = csv
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  ta.setSelectionRange(0, 999999)
+  var ok = document.execCommand('copy')
+  document.body.removeChild(ta)
+  if (ok) {
+    alert('✅ 已复制 ' + patterns.length + ' 条结果，请到 WPS/Excel 粘贴')
+  } else {
+    prompt('复制失败，请手动复制以下内容:', csv)
+  }
 }
 
 // ===================== Market Scan =====================

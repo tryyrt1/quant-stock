@@ -6,3 +6,8 @@ server_log.txt
 venv/
 *.egg-info/
 .DS_Store
+# 临时脚本，不上传
+fix_*.py
+update_*.py
+insert_block.py
+stock_list.json
