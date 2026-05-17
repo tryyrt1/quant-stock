@@ -414,6 +414,142 @@ def pattern_one_limitup(klines):
     }
 
 
+def pattern_pre_breakout(klines, lookback=40):
+    """潜在翻倍启动前特征: 连阳+缩量回调+放量启动前兆"""
+    if len(klines) < lookback + 30:
+        return False, {}
+
+    closes = [k['close'] for k in klines]
+    volumes = [k['volume'] for k in klines]
+    n = len(closes)
+
+    # 分析区间: 最近 lookback 天
+    recent = klines[-lookback:]
+    r_closes = [k['close'] for k in recent]
+    r_volumes = [k['volume'] for k in recent]
+
+    # ---- 1. 连阳统计 ----
+    consec_up = 0; max_consec_up = 0
+    for k in recent:
+        if k['close'] >= k['open']:
+            consec_up += 1
+            max_consec_up = max(max_consec_up, consec_up)
+        else:
+            consec_up = 0
+
+    # 最后一段连阳
+    last_consec_up = 0
+    for k in reversed(recent):
+        if k['close'] >= k['open']:
+            last_consec_up += 1
+        else:
+            break
+
+    if max_consec_up < 2 and last_consec_up < 2:
+        return False, {}
+
+    # ---- 2. 阳线比例 ----
+    up_days = sum(1 for k in recent if k['close'] >= k['open'])
+    down_days = lookback - up_days
+    up_ratio = up_days / lookback * 100
+
+    if up_ratio < 48:
+        return False, {}
+
+    # ---- 3. 成交量分析 ----
+    earlier = klines[-lookback-30:-lookback] if n >= lookback + 30 else klines[:n-lookback]
+    if earlier:
+        earlier_vol_avg = sum(k['volume'] for k in earlier) / len(earlier)
+    else:
+        earlier_vol_avg = sum(r_volumes) / len(r_volumes)
+
+    recent_vol_avg = sum(r_volumes) / len(r_volumes)
+    vol_ratio = recent_vol_avg / earlier_vol_avg if earlier_vol_avg > 0 else 1
+
+    # 尾端10天放量
+    last10 = r_volumes[-10:] if len(r_volumes) >= 10 else r_volumes
+    before = r_volumes[:-10] if len(r_volumes) >= 10 else []
+    last10_avg = sum(last10) / len(last10) if last10 else 0
+    before_avg = sum(before) / len(before) if before else 0
+    last_vol_ratio = last10_avg / before_avg if before_avg > 0 else 1
+
+    if vol_ratio < 0.6:
+        return False, {}
+
+    # ---- 4. 价格位置分析 ----
+    # MA20, MA60
+    ma20 = calc_ma(closes, 20)
+    ma60 = calc_ma(closes, 60)
+    current_close = closes[-1]
+    ma20_val = ma20[-1] if ma20[-1] is not None else current_close
+    ma60_val = ma60[-1] if ma60[-1] is not None else current_close
+
+    price_to_ma20 = (current_close - ma20_val) / ma20_val * 100
+    price_to_ma60 = (current_close - ma60_val) / ma60_val * 100
+
+    # ---- 5. 回撤后企稳 ----
+    recent_max = max(r_closes)
+    recent_min = min(r_closes)
+    peak_to_trough = (recent_max - recent_min) / recent_max * 100 if recent_max > 0 else 0
+
+    # ---- 6. 近期涨幅(温和, 未暴涨) ----
+    gain_10d = (r_closes[-1] - r_closes[0]) / r_closes[0] * 100 if len(r_closes) >= 10 else 0
+
+    # 排除近期涨幅过大的(可能已到高位)
+    if gain_10d > 30:
+        return False, {}
+
+    # ---- 综合评分 ----
+    score = 0
+    # 连阳加分
+    if max_consec_up >= 5: score += 25
+    elif max_consec_up >= 4: score += 20
+    elif max_consec_up >= 3: score += 15
+    elif max_consec_up >= 2: score += 10
+    if last_consec_up >= 3: score += 15
+    elif last_consec_up >= 2: score += 8
+
+    # 成交量加分
+    if vol_ratio >= 1.5: score += 20
+    elif vol_ratio >= 1.2: score += 15
+    elif vol_ratio >= 1.0: score += 10
+    if last_vol_ratio >= 1.3: score += 15
+    elif last_vol_ratio >= 1.1: score += 8
+
+    # 价格位置加分 (在MA20/MA60附近最佳)
+    if -5 <= price_to_ma20 <= 3: score += 15
+    elif -10 <= price_to_ma20 < -5: score += 10
+    elif -15 <= price_to_ma20 < -10: score += 5
+    if -8 <= price_to_ma60 <= 5: score += 10
+    elif -15 <= price_to_ma60 < -8: score += 5
+
+    # 阳线比例
+    if up_ratio >= 60: score += 10
+    elif up_ratio >= 55: score += 5
+    elif up_ratio >= 50: score += 2
+
+    # 大阳线(>3%)检查
+    big_up = sum(1 for k in recent if (k['close'] - k['open']) / k['open'] * 100 > 3)
+    if 1 <= big_up <= 5: score += 10
+
+    if score < 35:
+        return False, {}
+
+    return True, {
+        'score': score,
+        'max_consec_up': max_consec_up,
+        'last_consec_up': last_consec_up,
+        'up_ratio': round(up_ratio, 1),
+        'vol_ratio': round(vol_ratio, 2),
+        'last_vol_ratio': round(last_vol_ratio, 2),
+        'price_to_ma20': round(price_to_ma20, 1),
+        'price_to_ma60': round(price_to_ma60, 1),
+        'gain_10d': round(gain_10d, 1),
+        'drawdown': round(peak_to_trough, 1),
+        'label': f'潜在翻倍(评分{score}) 连阳{max_consec_up}天 量比{vol_ratio:.1f} 距MA20:{price_to_ma20:+.1f}%'
+    }
+
+
 # 所有模式列表: (name, display_name, func)
 ALL_PATTERNS = [
     ('consecutive_up', '连续上攻', pattern_consecutive_up),
@@ -425,6 +561,7 @@ ALL_PATTERNS = [
     ('long_lower_shadow', '长下影+中阳', pattern_long_lower_shadow),
     ('oversold', '超跌筛选', pattern_oversold),
     ('one_limitup', '首板涨停', pattern_one_limitup),
+    ('pre_breakout', '潜在翻倍', pattern_pre_breakout),
 ]
 
 def scan_patterns(klines_all):
