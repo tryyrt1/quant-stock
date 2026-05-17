@@ -550,10 +550,69 @@ def pattern_pre_breakout(klines, lookback=40):
     }
 
 
+def pattern_low_vol_surge(klines, lookback=60, vol_mult=1.8):
+    """低位放量: 价格在低位(近60日区间底部30%), 成交量放大至均量1.8倍以上"""
+    if len(klines) < lookback + 5:
+        return False, {}
+    closes = _safe_close(klines)
+    vols = _safe_vol(klines)
+    recent = klines[-(lookback + 5):]
+    r_closes = closes[-(lookback + 5):]
+    r_vols = vols[-(lookback + 5):]
+
+    # 当前价格
+    cur_close = recent[-1]['close']
+    cur_vol = recent[-1]['volume']
+    cur_open = recent[-1]['open']
+
+    # 价格在近N日区间的底部位置（百分比）：越低越符合"低位"
+    mn = min(r_closes)
+    mx = max(r_closes)
+    if mx <= mn:
+        return False, {}
+    pos_pct = (cur_close - mn) / (mx - mn) * 100
+
+    # 低位条件：价格在底部30%以内
+    if pos_pct > 30:
+        return False, {}
+
+    # 20日均量
+    vol20 = sum(r_vols[-20:]) / 20
+    if vol20 <= 0:
+        return False, {}
+
+    # 放量条件
+    vol_ratio = cur_vol / vol20
+    if vol_ratio < vol_mult:
+        return False, {}
+
+    # 价格表现：当天最好是阳线或小跌
+    change_pct = (cur_close - cur_open) / cur_open * 100
+
+    # 计算距MA20/MA60
+    ma20 = calc_ma(r_closes, 20)
+    ma60 = calc_ma(r_closes, 60)
+    ma20_val = ma20[-1] if ma20[-1] else 0
+    ma60_val = ma60[-1] if ma60[-1] else 0
+    dist_ma20 = (cur_close - ma20_val) / ma20_val * 100 if ma20_val else 0
+    dist_ma60 = (cur_close - ma60_val) / ma60_val * 100 if ma60_val else 0
+
+    return True, {
+        'pos_pct': round(pos_pct, 1),
+        'vol_ratio': round(vol_ratio, 2),
+        'volume': cur_vol,
+        'change_pct': round(change_pct, 2),
+        'dist_ma20': round(dist_ma20, 1),
+        'dist_ma60': round(dist_ma60, 1),
+        'label': f'低位放量(区间底部{pos_pct:.0f}% 量比{vol_ratio:.1f}倍 距MA20:{dist_ma20:+.1f}%)'
+    }
+
+
 # 所有模式列表: (name, display_name, func)
 ALL_PATTERNS = [
     ('consecutive_up', '连续上攻', pattern_consecutive_up),
     ('golden_cross', '均线金叉', pattern_golden_cross),
+    ('low_vol_surge', '低位放量', pattern_low_vol_surge),
     ('obv_breakout', 'OBV价升创新高', pattern_obv_breakout),
     ('obv_flat', 'OBV横盘', pattern_obv_flat),
     ('obv_divergence', 'OBV底背离', pattern_obv_divergence),
