@@ -30,7 +30,7 @@ if not os.path.isdir(UZI_SKILL_DIR):
 UZI_SCRIPTS_DIR = os.path.join(UZI_SKILL_DIR, 'skills', 'deep-analysis', 'scripts')
 UZI_REPORTS_DIR = os.path.join(UZI_SCRIPTS_DIR, 'reports')
 UZI_STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static', 'uzi')
-UZI_PYTHON = 'python3' if sys.platform != 'win32' else 'python'
+UZI_PYTHON = 'python3' if os.name != 'nt' else 'python'
 
 from engine.indicators import *
 from engine.factors import analyze_factors
