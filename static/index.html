@@ -253,8 +253,8 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 <div class="tabbar">
   <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
   <div class="tab" data-tab="detail" onclick="switchTab('detail')"><span class="tab-icon">📋</span>分析报告</div>
-  <div class="tab" data-tab="patterns" onclick="switchTab('patterns')"><span class="tab-icon">🎯</span>选股模式</div>
-  <div class="tab" data-tab="sectors" onclick="switchTab('sectors');loadSectorList()"><span class="tab-icon">🧩</span>板块追踪</div>
+  <div class="tab" data-tab="patterns" onclick="switchTab('patterns');loadSnapshots()"><span class="tab-icon">🎯</span>选股模式</div>
+  <div class="tab" data-tab="sectors" onclick="switchTab('sectors');loadSectorList();loadSnapshots()"><span class="tab-icon">🧩</span>板块追踪</div>
   <div class="tab" data-tab="commodity" onclick="switchTab('commodity');loadCommodityList()"><span class="tab-icon">🛢️</span>宏观/商品</div>
 </div>
 
@@ -928,6 +928,31 @@ function fmtNum(v) {
   if (Math.abs(v)>=1e8) return (v/1e8).toFixed(2)+'亿';
   if (Math.abs(v)>=1e4) return (v/1e4).toFixed(2)+'万';
   return v.toFixed(2);
+}
+
+// ===================== Snapshot (定时扫描结果) =====================
+async function loadSnapshots() {
+  const data = await api('/api/snapshots')
+  if (!data) return
+  const tab = document.querySelector('.tab.active')
+  if (!tab) return
+  const t = tab.dataset.tab
+
+  if (t === 'patterns' && data.patterns) {
+    const info = document.getElementById('marketScanInfo')
+    if (info) info.textContent = `📁 自动扫描 @ ${data.patterns.time || data.time || '?'} | ${data.patterns.count}个形态 | 点击"扫描"获取最新`
+    if (data.patterns.patterns && data.patterns.patterns.length) {
+      state.patterns = data.patterns.patterns
+      renderPatterns()
+    }
+  }
+  if (t === 'sectors' && data.sectors) {
+    const info = document.getElementById('sectorInfo')
+    if (info) info.textContent = `📁 自动扫描 @ ${data.sectors.time || data.time || '?'} | ${data.sectors.total_sectors}个板块 ${data.sectors.total_patterns}个形态`
+    if (data.sectors.sectors && data.sectors.sectors.length) {
+      renderSectorResults(data.sectors.sectors)
+    }
+  }
 }
 
 function renderMinesweeper(data) {

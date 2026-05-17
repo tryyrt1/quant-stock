@@ -1457,6 +1457,100 @@ textarea{{width:100%;height:300px;background:#1a1a3e;color:#e0e0e0;border:1px so
 
 import threading
 
+# ─── 定时扫描 ───
+SNAPSHOT_DIR = os.path.join(DATA_DIR, 'snapshots')
+SCHEDULE_TIMES = [(9,25),(9,45),(10,10),(11,0),(13,30),(14,30),(15,10)]
+_SCHEDULER_RUNNING = False
+
+def _save_snapshot(name, data):
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    path = os.path.join(SNAPSHOT_DIR, name)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+
+def _run_scheduled_scans():
+    """定时扫描：选股模式 + 板块追踪"""
+    print(f'[scheduler] 执行定时扫描...')
+    try:
+        # 1. 选股模式扫描
+        wl = load_watchlist()
+        if wl:
+            import concurrent.futures
+            def f(s):
+                try: k = fetch_kline(s['market']+s['code'], 120); return (s['code'], s['market'], s.get('name',s['code']), k)
+                except: return (s['code'], s['market'], s.get('name',s['code']), [])
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
+                kline_results = list(exe.map(f, wl))
+            klines_all = {}; code_info = {}
+            for code, market, name, k in kline_results:
+                if len(k) >= 60:
+                    klines_all[f'{market}{code}'] = k
+                    code_info[f'{market}{code}'] = {'code':code,'market':market,'name':name}
+            raw = scan_patterns(klines_all)
+            patterns_out = []
+            for full_code, matches in raw.items():
+                info = code_info.get(full_code, {})
+                for m in matches:
+                    patterns_out.append({
+                        'code': info.get('code',full_code), 'market': info.get('market','sh'),
+                        'name': info.get('name',full_code), 'pattern_key': m['key'],
+                        'pattern_name': m['name'], 'label': m['info'].get('label',''),
+                        'detail': {k:v for k,v in m['info'].items() if k!='label'},
+                    })
+            _save_snapshot('patterns.json', {'patterns':patterns_out, 'count':len(patterns_out), 'stocks_matched':len(raw), 'time':time.strftime('%H:%M')})
+            print(f'[scheduler] 选股模式: {len(patterns_out)} 个形态')
+    except Exception as e:
+        print(f'[scheduler] 选股模式扫描失败: {e}')
+
+    try:
+        # 2. 板块追踪扫描
+        from engine.sectors import search_sectors, scan_sector_stocks, PREDEFINED
+        matched = search_sectors(PREDEFINED, 'both')
+        codes = [s['sector_code'] for s in matched if s['found']]
+        if codes:
+            result = scan_sector_stocks(codes, fetch_kline, max_stocks=20)
+            result['time'] = time.strftime('%H:%M')
+            _save_snapshot('sectors.json', result)
+            print(f'[scheduler] 板块追踪: {result["total_patterns"]} 个形态, {len(codes)} 板块')
+    except Exception as e:
+        print(f'[scheduler] 板块扫描失败: {e}')
+    print(f'[scheduler] 扫描完成')
+
+def _scheduler_loop():
+    """每30秒检查一次，到点执行"""
+    global _SCHEDULER_RUNNING
+    _SCHEDULER_RUNNING = True
+    _run_history = set()  # (date, hour, min) 已执行的时段
+    while _SCHEDULER_RUNNING:
+        try:
+            now = time.localtime()
+            hm = (now.tm_hour, now.tm_min)
+            key = (now.tm_year, now.tm_yday, now.tm_hour, now.tm_min)
+            if hm in SCHEDULE_TIMES and key not in _run_history:
+                _run_history.add(key)
+                _run_scheduled_scans()
+        except:
+            pass
+        time.sleep(30)
+
+# 启动调度器
+threading.Thread(target=_scheduler_loop, daemon=True).start()
+
+@app.route('/api/snapshots')
+def get_snapshots():
+    """获取最新快照"""
+    result = {'time': None}
+    for name in ['patterns.json', 'sectors.json']:
+        path = os.path.join(SNAPSHOT_DIR, name)
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    result[name.replace('.json','')] = json.load(f)
+            except: pass
+    if result.get('patterns'):
+        result['time'] = result['patterns'].get('time') or result.get('time')
+    return jsonify(result)
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     ip = get_local_ip()
