@@ -209,6 +209,27 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     <div id="patternResults"></div>
   </div>
 
+  <!-- ===== 板块追踪页 ===== -->
+  <div id="page-sectors" class="hide">
+    <div class="card">
+      <div class="card-title">🧩 板块追踪</div>
+      <div style="font-size:12px;color:#aaa;margin-bottom:10px">选择板块 → 扫描成分股技术形态</div>
+      <div id="sectorGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
+        <!-- filled by JS -->
+      </div>
+      <div class="refresh-bar">
+        <span class="info" id="sectorInfo">选择板块并扫描</span>
+        <button id="btnSectorScan" onclick="scanSectors()" class="btn btn-secondary" style="font-size:11px;line-height:28px">🔍 扫描板块</button>
+      </div>
+      <div class="add-row" style="margin-top:6px">
+        <input id="customSectorInput" placeholder="输入自定义板块名(如：算力) 回车添加" style="flex:1;font-size:12px;padding:6px 10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#ccc" onkeydown="if(event.key==='Enter')addCustomSector()">
+        <button onclick="addCustomSector()" style="font-size:11px;padding:6px 10px;margin-left:4px">添加</button>
+      </div>
+      <div style="font-size:10px;color:#555;margin-top:4px" id="sectorScanInfo"></div>
+    </div>
+    <div id="sectorResults"></div>
+  </div>
+
   <!-- ===== 宏观/商品页 ===== -->
   <div id="page-commodity" class="hide">
     <div class="card">
@@ -233,6 +254,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
   <div class="tab" data-tab="detail" onclick="switchTab('detail')"><span class="tab-icon">📋</span>分析报告</div>
   <div class="tab" data-tab="patterns" onclick="switchTab('patterns')"><span class="tab-icon">🎯</span>选股模式</div>
+  <div class="tab" data-tab="sectors" onclick="switchTab('sectors');loadSectorList()"><span class="tab-icon">🧩</span>板块追踪</div>
   <div class="tab" data-tab="commodity" onclick="switchTab('commodity');loadCommodityList()"><span class="tab-icon">🛢️</span>宏观/商品</div>
 </div>
 
@@ -702,12 +724,149 @@ function renderReport(data) {
   document.getElementById('reportContent').innerHTML = html
 }
 
+// ===================== Sector / Board Tracking =====================
+let sectorScanning = false
+let selectedSectors = []
+
+async function loadSectorList() {
+  const grid = document.getElementById('sectorGrid')
+  if (grid.children.length > 0 && grid.dataset.loaded) return
+  grid.innerHTML = '<div style="font-size:12px;color:var(--dim);padding:8px">加载板块列表...</div>'
+  const data = await apiPost('/api/sectors/list', {})
+  if (!data || !data.sectors) {
+    grid.innerHTML = '<div style="font-size:12px;color:#ff6b6b;padding:8px">板块列表获取失败</div>'
+    return
+  }
+  let html = ''
+  data.sectors.forEach(s => {
+    const count = s.found ? `(${s.stock_count}只)` : ''
+    html += `<label style="display:flex;align-items:center;gap:4px;padding:6px 8px;
+      background:rgba(255,255,255,.04);border-radius:6px;font-size:12px;cursor:pointer;
+      ${s.found ? '' : 'opacity:.4'}">
+      <input type="checkbox" value="${s.sector_code}" data-name="${s.display_name}" ${s.found ? '' : 'disabled'} onchange="onSectorToggle(this)">
+      <span>${s.display_name} ${count}</span>
+      ${s.found ? '' : '<span style="color:#ff6b6b;font-size:10px;margin-left:2px">未找到</span>'}
+    </label>`
+  })
+  grid.innerHTML = html
+  grid.dataset.loaded = '1'
+}
+
+function onSectorToggle(cb) {
+  if (cb.checked) {
+    selectedSectors.push({code: cb.value, name: cb.dataset.name})
+  } else {
+    selectedSectors = selectedSectors.filter(s => s.code !== cb.value)
+  }
+  document.getElementById('sectorScanInfo').textContent =
+    selectedSectors.length > 0 ? `已选 ${selectedSectors.length} 个板块` : '请选择板块'
+}
+
+async function addCustomSector() {
+  const input = document.getElementById('customSectorInput')
+  const name = input.value.trim()
+  if (!name) return
+  input.placeholder = '搜索中...'; input.disabled = true
+  const data = await apiPost('/api/sectors/list', {names: [name]})
+  if (data && data.sectors && data.sectors[0] && data.sectors[0].found) {
+    const s = data.sectors[0]
+    const grid = document.getElementById('sectorGrid')
+    const label = document.createElement('label')
+    label.style.cssText = 'display:flex;align-items:center;gap:4px;padding:6px 8px;background:rgba(0,210,255,.08);border-radius:6px;font-size:12px;cursor:pointer;border:1px solid var(--accent)'
+    label.innerHTML = `<input type="checkbox" value="${s.sector_code}" data-name="${s.display_name}" checked onchange="onSectorToggle(this)"><span>${s.display_name} (${s.stock_count}只)</span>`
+    grid.appendChild(label)
+    selectedSectors.push({code: s.sector_code, name: s.display_name})
+    document.getElementById('sectorScanInfo').textContent = `已选 ${selectedSectors.length} 个板块`
+    input.value = ''
+  } else {
+    alert(`未找到板块: ${name}`)
+  }
+  input.placeholder = '输入自定义板块名(如：算力) 回车添加'
+  input.disabled = false; input.focus()
+}
+
+async function scanSectors() {
+  if (sectorScanning) return
+  if (selectedSectors.length === 0) { alert('请先选择板块'); return }
+  sectorScanning = true
+  const btn = document.getElementById('btnSectorScan')
+  btn.innerHTML = '<span class="spinner"></span>扫描中...'; btn.disabled = true
+  document.getElementById('sectorScanInfo').textContent = '获取板块成分股并分析形态，约需30-60秒...'
+  const data = await apiPost('/api/sectors/scan', {
+    sector_codes: selectedSectors.map(s => s.code), max_stocks: 30
+  })
+  if (data && data.sectors) {
+    document.getElementById('sectorInfo').textContent =
+      `上次扫描: ${new Date().toLocaleTimeString()} | ${data.total_sectors}个板块 ${data.total_stocks}只股票 ${data.total_patterns}个形态`
+    renderSectorResults(data.sectors)
+    document.getElementById('sectorScanInfo').textContent = `扫描完成，${data.total_patterns}个形态匹配`
+  } else {
+    document.getElementById('sectorScanInfo').textContent = '扫描失败，请重试'
+  }
+  sectorScanning = false
+  btn.innerHTML = '🔍 扫描板块'; btn.disabled = false
+}
+
+function renderSectorResults(sectors) {
+  const el = document.getElementById('sectorResults')
+  if (!sectors || sectors.length === 0) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">🧩</div><div>暂无结果</div></div>'; return
+  }
+  let html = ''
+  const patColors = {
+    '连续上攻': '#00d2ff', '均线金叉': '#ff4757', 'OBV价升创新高': '#a05aff',
+    'OBV横盘': '#a05aff', 'OBV底背离': '#a05aff', 'OBV+连涨共振': '#ff46c8',
+    '长下影+中阳': '#00e6c8', '超跌筛选': '#ff4646', '首板涨停': '#ffd700',
+    '潜在翻倍': '#ff6432', '低位放量': '#2ed573',
+  }
+  sectors.forEach(sec => {
+    const upPct = sec.stock_count > 0 ? (sec.up_count / sec.stock_count * 100).toFixed(0) : 0
+    const downPct = sec.stock_count > 0 ? (sec.down_count / sec.stock_count * 100).toFixed(0) : 0
+    const hasPatterns = sec.pattern_count > 0
+    html += `<div class="card" style="border-left:3px solid ${hasPatterns ? 'var(--accent)' : 'var(--dim)'}">
+      <div class="card-title" style="display:flex;justify-content:space-between;flex-wrap:wrap">
+        <span>🧩 ${sec.name} <span style="font-size:11px;color:var(--dim);font-weight:400">${sec.stock_count}只</span>
+          <span style="font-size:10px;color:#777;margin-left:4px">${sec.type||''}</span></span>
+        <span>
+          <span style="color:#2ed573;font-size:12px">↑${sec.up_count}</span>
+          <span style="color:#ff4757;font-size:12px;margin-left:6px">↓${sec.down_count}</span>
+          ${hasPatterns ? `<span style="background:rgba(0,210,255,.15);color:var(--accent);font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">🎯${sec.pattern_count}</span>` : ''}
+        </span>
+      </div>
+      <div style="height:3px;background:rgba(255,255,255,.06);border-radius:2px;margin-bottom:8px;display:flex">
+        <div style="width:${upPct}%;background:#2ed573;border-radius:2px 0 0 2px"></div>
+        <div style="width:${100-upPct}%;background:#ff4757;border-radius:0 2px 2px 0"></div>
+      </div>`
+    sec.stocks.forEach(stk => {
+      const chgCls = stk.change_pct > 0 ? 'up' : (stk.change_pct < 0 ? 'down' : '')
+      const chgStr = stk.change_pct ? `${stk.change_pct >= 0 ? '+' : ''}${stk.change_pct}%` : ''
+      const patTags = (stk.patterns || []).map(p => {
+        const c = patColors[p.name] || 'var(--accent)'
+        return `<span style="background:rgba(0,210,255,.1);color:${c};font-size:10px;padding:1px 5px;border-radius:3px;margin-right:3px;border:1px solid rgba(255,255,255,.05)">${p.name}</span>`
+      }).join('')
+      html += `<div class="stock-card" style="cursor:pointer" onclick='loadDetail("${stk.code}","${stk.market}")'>
+        <div class="sc-left">
+          <div><span class="sc-name">${stk.name}</span><span class="sc-code">${stk.market.toUpperCase()}.${stk.code}</span></div>
+          <div style="margin-top:3px">${patTags}</div>
+        </div>
+        <div class="sc-right">
+          <span class="sc-price ${chgCls}">${chgStr}</span>
+          <span style="font-size:13px;font-weight:700">${stk.price || ''}</span>
+        </div>
+      </div>`
+    })
+    html += `</div>`
+  })
+  el.innerHTML = html
+}
+
 // ===================== Navigation =====================
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab))
   document.getElementById('page-home').classList.toggle('hide',tab!=='home')
   document.getElementById('page-detail').classList.toggle('hide',tab!=='detail')
   document.getElementById('page-patterns').classList.toggle('hide',tab!=='patterns')
+  document.getElementById('page-sectors').classList.toggle('hide',tab!=='sectors')
   document.getElementById('page-commodity').classList.toggle('hide',tab!=='commodity')
 }
 function showHome() { switchTab('home') }

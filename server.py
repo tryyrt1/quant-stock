@@ -36,6 +36,7 @@ from engine.indicators import *
 from engine.factors import analyze_factors
 from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
+from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, PREDEFINED
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
 STATIC_STOCKS = [
@@ -948,6 +949,38 @@ def commodity_detail():
     })
 
 
+# ─── 板块追踪 API ───
+
+@app.route('/api/sectors/list', methods=['POST'])
+def sectors_list_api():
+    """解析预设/自定义板块名称 → 板块代码"""
+    data = request.json or {}
+    names = data.get("names", PREDEFINED)
+    board_type = data.get("type", "both")
+    result = search_sectors(names, board_type)
+    return jsonify({"sectors": result})
+
+
+@app.route('/api/sectors/scan', methods=['POST'])
+def sectors_scan_api():
+    """扫描选定板块成分股的技术形态"""
+    data = request.json or {}
+    sector_codes = data.get("sector_codes", [])
+    max_stocks = data.get("max_stocks", 30)
+    if not sector_codes:
+        return jsonify({"error": "未提供板块代码"}), 400
+    result = scan_sector_stocks(sector_codes, fetch_kline, max_stocks=max_stocks)
+    return jsonify(result)
+
+
+@app.route('/api/sectors/<code>/stocks')
+def sector_stocks_api(code):
+    """快速获取板块成分股"""
+    max_s = request.args.get("max", 50, type=int)
+    stocks = get_sector_stocks(code, max_s)
+    return jsonify({"sector_code": code, "stocks": stocks, "count": len(stocks)})
+
+
 @app.route('/api/scan')
 def scan_watchlist():
     """扫描自选股，批量分析"""
@@ -1421,6 +1454,8 @@ textarea{{width:100%;height:300px;background:#1a1a3e;color:#e0e0e0;border:1px so
 
 
 # =================== 启动 ===================
+
+import threading
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
