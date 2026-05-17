@@ -903,6 +903,8 @@ function runUziAnalysis(code, market) {
               btn.innerHTML = '⚡ UZI 深度分析'
               btn.className = 'btn btn-uzi'
               result.innerHTML = `<div class="uzi-error">❌ 分析失败: ${s.msg || '未知错误'}</div>`
+            } else if (s.status === 'no_task') {
+              result.innerHTML = '<div class="uzi-progress">⏳ 任务已失效，请重新点击分析</div>'
             } else {
               result.innerHTML = '<div class="uzi-progress">⏳ 分析进行中 (采集22维数据中)...</div>'
             }

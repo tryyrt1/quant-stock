@@ -525,7 +525,7 @@ def _run_uzi_analysis(code, market, task_id):
             full_code = 'sh' + code
 
         cmd = [UZI_PYTHON, 'run.py', full_code, '--depth', 'lite', '--no-browser']
-        proc = subprocess.run(cmd, cwd=UZI_SKILL_DIR, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(cmd, cwd=UZI_SKILL_DIR, capture_output=True, text=True, timeout=600)
 
         # 找到生成的最新报告
         from datetime import datetime
@@ -557,7 +557,7 @@ def _run_uzi_analysis(code, market, task_id):
 
     except subprocess.TimeoutExpired:
         with uzi_tasks_lock:
-            uzi_tasks[task_id] = {'status': 'error', 'msg': '分析超时(5min)'}
+            uzi_tasks[task_id] = {'status': 'error', 'msg': '分析超时(10min)'}
     except Exception as e:
         with uzi_tasks_lock:
             uzi_tasks[task_id] = {'status': 'error', 'msg': str(e)}
