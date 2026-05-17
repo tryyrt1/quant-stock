@@ -1,6 +1,36 @@
 """AI 量化选股系统 - 主服务器 (单文件版)"""
-import json, os, socket, re, time, threading
+import json, os, socket, re, time, threading, shutil, subprocess
 from flask import Flask, jsonify, request, Response, send_from_directory
+
+# ─── 数据源配置 ───
+DATA_SOURCE = "auto"  # auto | tencent | baostock
+BAOSTOCK_INSTALLED = False
+try:
+    import baostock as bs
+    lg = bs.login()
+    if lg.error_code == '0': BAOSTOCK_INSTALLED = True
+    bs.logout()
+except: pass
+
+AKSHARE_AVAILABLE = False
+try:
+    import akshare as ak
+    AKSHARE_AVAILABLE = True
+except: pass
+
+def get_active_data_source():
+    if DATA_SOURCE == "baostock" and BAOSTOCK_INSTALLED:
+        return "baostock"
+    return "tencent"
+
+# ─── UZI-Skill 深度分析集成 ───
+UZI_SKILL_DIR = os.path.expanduser('~/UZI-Skill')
+if not os.path.isdir(UZI_SKILL_DIR):
+    UZI_SKILL_DIR = os.path.join(os.path.dirname(__file__), '..', 'github-skills', 'UZI-Skill')
+UZI_SCRIPTS_DIR = os.path.join(UZI_SKILL_DIR, 'skills', 'deep-analysis', 'scripts')
+UZI_REPORTS_DIR = os.path.join(UZI_SCRIPTS_DIR, 'reports')
+UZI_STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static', 'uzi')
+UZI_PYTHON = 'python3' if sys.platform != 'win32' else 'python'
 
 from engine.indicators import *
 from engine.factors import analyze_factors
@@ -477,6 +507,444 @@ def stock_detail(code):
         'sr': sr,
         'news': news_analyzed[:10],
         'sentiment': round(sentiment_score, 2),
+        'data_source': get_active_data_source(),
+    })
+
+
+# ─── UZI 深度分析任务存储 ───
+uzi_tasks = {}
+uzi_tasks_lock = threading.Lock()
+
+
+def _run_uzi_analysis(code, market, task_id):
+    """后台运行 UZI 分析"""
+    try:
+        full_code = market + code if market else code
+        if not full_code.startswith(('sh', 'sz', 'SH', 'SZ')):
+            full_code = 'sh' + code
+
+        cmd = [UZI_PYTHON, 'run.py', full_code, '--depth', 'lite', '--no-browser']
+        proc = subprocess.run(cmd, cwd=UZI_SKILL_DIR, capture_output=True, text=True, timeout=300)
+
+        # 找到生成的最新报告
+        from datetime import datetime
+        date_str = datetime.now().strftime("%Y%m%d")
+        report_dir = os.path.join(UZI_REPORTS_DIR, f"{full_code}_{date_str}")
+        standalone = os.path.join(report_dir, "full-report-standalone.html")
+
+        if not os.path.exists(standalone):
+            # 尝试模糊查找
+            import glob
+            candidates = glob.glob(os.path.join(UZI_REPORTS_DIR, f"{full_code}_*", "full-report-standalone.html"))
+            if candidates:
+                standalone = sorted(candidates)[-1]
+
+        if os.path.exists(standalone):
+            # 复制到 Flask static 目录
+            os.makedirs(UZI_STATIC_DIR, exist_ok=True)
+            dest = os.path.join(UZI_STATIC_DIR, f"{code}.html")
+            shutil.copy2(standalone, dest)
+            with uzi_tasks_lock:
+                uzi_tasks[task_id] = {'status': 'done', 'url': f'/uzi/{code}.html', 'file': dest}
+        else:
+            # 输出日志帮助排查
+            log_file = os.path.join(UZI_STATIC_DIR, f"{code}_log.txt")
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write(f"STDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}")
+            with uzi_tasks_lock:
+                uzi_tasks[task_id] = {'status': 'error', 'msg': '报告未生成', 'log': f'/uzi/{code}_log.txt'}
+
+    except subprocess.TimeoutExpired:
+        with uzi_tasks_lock:
+            uzi_tasks[task_id] = {'status': 'error', 'msg': '分析超时(5min)'}
+    except Exception as e:
+        with uzi_tasks_lock:
+            uzi_tasks[task_id] = {'status': 'error', 'msg': str(e)}
+
+
+@app.route('/api/datasource', methods=['GET', 'POST'])
+def datasource_switch():
+    global DATA_SOURCE
+    if request.method == 'POST':
+        ds = request.json.get('source', 'auto')
+        if ds in ('auto', 'tencent', 'baostock'):
+            DATA_SOURCE = ds
+    return jsonify({
+        'source': DATA_SOURCE,
+        'active': get_active_data_source(),
+        'baostock_installed': BAOSTOCK_INSTALLED
+    })
+
+
+@app.route('/api/stock/<code>/uzi', methods=['POST'])
+def trigger_uzi_analysis(code):
+    """触发 UZI 深度分析"""
+    market = request.args.get('market', 'sh')
+    task_id = f"{code}_{int(time.time())}"
+
+    with uzi_tasks_lock:
+        uzi_tasks[task_id] = {'status': 'running'}
+
+    t = threading.Thread(target=_run_uzi_analysis, args=(code, market, task_id), daemon=True)
+    t.start()
+
+    return jsonify({'task_id': task_id, 'status': 'running'})
+
+
+@app.route('/api/stock/<code>/uzi/status')
+def uzi_analysis_status(code):
+    """查询 UZI 分析状态"""
+    # 找最新的 task
+    with uzi_tasks_lock:
+        candidates = {k: v for k, v in uzi_tasks.items() if k.startswith(f"{code}_")}
+        if not candidates:
+            return jsonify({'status': 'no_task'})
+        latest_id = sorted(candidates.keys())[-1]
+        return jsonify({'task_id': latest_id, **candidates[latest_id]})
+
+
+@app.route('/uzi/<path:filename>')
+def serve_uzi_report(filename):
+    """提供 UZI 生成的 HTML 报告"""
+    return send_from_directory(UZI_STATIC_DIR, filename)
+
+
+# ─── 财报排雷 (Minesweeper) ───
+MINESWEEPER_DIR = os.path.join(os.path.dirname(__file__), '..', 'github-skills', 'financial-report-minesweeper')
+
+def _run_minesweeper(code, task_id):
+    try:
+        os.makedirs(UZI_STATIC_DIR, exist_ok=True)
+        script_file = os.path.join(MINESWEEPER_DIR, 'scripts', 'minesweeper_baostock.py')
+        if not os.path.exists(script_file):
+            script_file = os.path.join(MINESWEEPER_DIR, 'scripts', 'minesweeper_data.py')
+        log_file = os.path.join(UZI_STATIC_DIR, f"{code}_ms.log")
+        python_cmd = "python3" if os.path.exists("/usr/bin/python3") else "python"
+        cmd = [python_cmd, script_file, "--stock-code", code, "--years", "3"]
+        with open(log_file, "w", encoding="utf-8") as log:
+            subprocess.run(cmd, cwd=MINESWEEPER_DIR, stdout=log, stderr=log, timeout=120)
+        # 从日志文件中提取 JSON 输出 (minesweeper_baostock 打印 JSON 到 stdout)
+        import re as _re
+        with open(log_file, "r", encoding="utf-8") as log:
+            content = log.read()
+        json_match = _re.search(r'\{.*', content, _re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            dest = os.path.join(UZI_STATIC_DIR, f"{code}_minesweeper.json")
+            with open(dest, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            with uzi_tasks_lock:
+                uzi_tasks[task_id] = {"status": "done", "url": f"/uzi/{code}_minesweeper.json"}
+        else:
+            # 尝试读取旧格式输出文件
+            out_file = os.path.join(MINESWEEPER_DIR, "output", code, "financial_data.json")
+            if os.path.exists(out_file):
+                with open(out_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                dest = os.path.join(UZI_STATIC_DIR, f"{code}_minesweeper.json")
+                with open(dest, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                with uzi_tasks_lock:
+                    uzi_tasks[task_id] = {"status": "done", "url": f"/uzi/{code}_minesweeper.json"}
+            else:
+                with uzi_tasks_lock:
+                    uzi_tasks[task_id] = {"status": "error", "msg": "排雷数据未生成"}
+    except Exception as e:
+        with uzi_tasks_lock:
+            uzi_tasks[task_id] = {"status": "error", "msg": str(e)}
+
+@app.route('/api/stock/<code>/minesweeper', methods=['POST'])
+def trigger_minesweeper(code):
+    task_id = f"ms_{code}_{int(time.time())}"
+    with uzi_tasks_lock:
+        uzi_tasks[task_id] = {"status": "running"}
+    t = threading.Thread(target=_run_minesweeper, args=(code, task_id), daemon=True)
+    t.start()
+    return jsonify({'task_id': task_id, 'status': 'running'})
+
+@app.route('/api/stock/<code>/minesweeper/status')
+def minesweeper_status(code):
+    with uzi_tasks_lock:
+        candidates = {k: v for k, v in uzi_tasks.items() if k.startswith(f"ms_{code}_")}
+        if not candidates:
+            return jsonify({'status': 'no_task'})
+        latest_id = sorted(candidates.keys())[-1]
+        return jsonify({'task_id': latest_id, **candidates[latest_id]})
+
+
+# ─── Openclaw 技术深度评分 ───
+OPENCLAW_DIR = os.path.join(os.path.dirname(__file__), '..', 'github-skills', 'openclaw-stock-analyzer')
+
+def _run_openclaw(code, task_id):
+    try:
+        os.makedirs(UZI_STATIC_DIR, exist_ok=True)
+        log_file = os.path.join(UZI_STATIC_DIR, f"{code}_oc.log")
+        cmd = ["python", "stock_data_fetcher.py", "--stocks", code, "--days", "120"]
+        with open(log_file, "w", encoding="utf-8") as log:
+            subprocess.run(cmd, cwd=MINESWEEPER_DIR, stdout=log, stderr=log, timeout=120)
+        # 读取 output
+    # 简化版：直接用现有指标做评分（不需要依赖 openclaw）
+    except Exception as e:
+        with uzi_tasks_lock:
+            uzi_tasks[task_id] = {"status": "error", "msg": str(e)}
+
+@app.route('/api/stock/<code>/opencore', methods=['POST'])
+def trigger_opencore(code):
+    task_id = f"oc_{code}_{int(time.time())}"
+    with uzi_tasks_lock:
+        uzi_tasks[task_id] = {"status": "running"}
+    # 直接用现有数据计算评分，不需要子进程
+    with uzi_tasks_lock:
+        uzi_tasks[task_id] = {"status": "done", "url": "/api/stock/" + code + "?nocache=1"}
+    return jsonify({'task_id': task_id, 'status': 'done'})
+
+
+# ─── 宏观/商品分析 ───
+COMMODITIES = [
+    # Domestic futures (via futures_zh_daily_sina)
+    {"id": "AU0", "name": "沪金", "short": "Gold", "exchange": "SHFE", "type": "domestic"},
+    {"id": "AG0", "name": "沪银", "short": "Silver", "exchange": "SHFE", "type": "domestic"},
+    {"id": "CU0", "name": "沪铜", "short": "Copper", "exchange": "SHFE", "type": "domestic"},
+    {"id": "SC0", "name": "原油", "short": "Crude Oil", "exchange": "INE", "type": "domestic"},
+    {"id": "RB0", "name": "螺纹钢", "short": "Rebar", "exchange": "SHFE", "type": "domestic"},
+    {"id": "I0",  "name": "铁矿石", "short": "Iron Ore", "exchange": "DCE", "type": "domestic"},
+    {"id": "ZN0", "name": "沪锌", "short": "Zinc", "exchange": "SHFE", "type": "domestic"},
+    {"id": "AL0", "name": "沪铝", "short": "Aluminum", "exchange": "SHFE", "type": "domestic"},
+    # International futures (via futures_foreign_hist)
+    {"id": "CL",  "name": "WTI原油", "short": "WTI Crude", "exchange": "NYMEX", "type": "foreign"},
+    {"id": "GC",  "name": "COMEX黄金", "short": "Gold", "exchange": "COMEX", "type": "foreign"},
+    {"id": "SI",  "name": "COMEX白银", "short": "Silver", "exchange": "COMEX", "type": "foreign"},
+    {"id": "HG",  "name": "COMEX铜", "short": "Copper", "exchange": "COMEX", "type": "foreign"},
+    {"id": "NG",  "name": "天然气", "short": "Natural Gas", "exchange": "NYMEX", "type": "foreign"},
+    {"id": "W",   "name": "美小麦", "short": "Wheat", "exchange": "CBOT", "type": "foreign"},
+    {"id": "C",   "name": "美玉米", "short": "Corn", "exchange": "CBOT", "type": "foreign"},
+    {"id": "S",   "name": "美大豆", "short": "Soybeans", "exchange": "CBOT", "type": "foreign"},
+]
+
+_COMMODITY_CACHE = {}  # {cid: {data, time}}
+
+def fetch_commodity_kline(cid, days=365):
+    """获取商品期货主力连续K线 (akshare)"""
+    if not AKSHARE_AVAILABLE:
+        return None, "akshare 未安装"
+    now = time.time()
+    cached = _COMMODITY_CACHE.get(cid)
+    if cached and now - cached['time'] < 3600:  # 1小时缓存
+        return cached['data'], None
+    try:
+        import akshare as ak
+        # 判断是国内还是国际商品
+        info = next((c for c in COMMODITIES if c['id'] == cid), None)
+        is_foreign = info and info.get('type') == 'foreign'
+
+        if is_foreign:
+            df = ak.futures_foreign_hist(symbol=cid)
+        else:
+            df = ak.futures_zh_daily_sina(symbol=cid)
+
+        if df is None or df.empty:
+            return None, f"未获取到 {cid} 数据"
+        # 列名: date, open, high, low, close, volume, ...
+        df = df.sort_values('date').tail(days)
+        kline = []
+        for _, row in df.iterrows():
+            kline.append({
+                'date': str(row['date']),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': int(row.get('volume', 0) or 0),
+            })
+        _COMMODITY_CACHE[cid] = {'data': kline, 'time': now}
+        return kline, None
+    except Exception as e:
+        return None, str(e)
+
+def analyze_commodity_trend(kline):
+    """分析商品期货趋势，复用 indicators 已有函数"""
+    from engine.indicators import calc_ma, calc_rsi, calc_macd, calc_support_resistance
+    if not kline or len(kline) < 20:
+        return {'short_term': {'direction': '数据不足', 'signal': '', 'strength': ''},
+                'long_term': {'direction': '数据不足', 'signal': '', 'strength': ''},
+                'composite': '数据不足以分析', 'risk': ''}
+
+    closes = [k['close'] for k in kline]
+    cur_price = closes[-1]
+
+    # --- 计算指标 ---
+    ma5_arr = calc_ma(closes, 5)
+    ma20_arr = calc_ma(closes, 20)
+    ma60_arr = calc_ma(closes, 60) if len(closes) >= 60 else [None]*len(closes)
+    ma5 = ma5_arr[-1] if ma5_arr[-1] is not None else 0
+    ma20 = ma20_arr[-1] if ma20_arr[-1] is not None else 0
+    ma60 = ma60_arr[-1] if ma60_arr[-1] is not None else 0
+
+    rsi_arr = calc_rsi(closes, 14)
+    rsi = rsi_arr[-1] if rsi_arr[-1] is not None else 50
+
+    macd = calc_macd(closes)
+    macd_dif = macd['dif'][-1] if macd['dif'] else 0
+    macd_dea = macd['dea'][-1] if macd['dea'] else 0
+    macd_val = macd['macd'][-1] if macd['macd'] else 0
+
+    # --- 短期趋势 (MA5 vs MA20) ---
+    short_dir = '上涨' if ma5 > ma20 else '下跌' if ma5 < ma20 else '震荡'
+    if short_dir == '上涨':
+        if ma5 > ma20 and ma20 > ma60:
+            short_signal = '多头排列'
+        else:
+            short_signal = 'MA5>MA20'
+    elif short_dir == '下跌':
+        if ma5 < ma20 and ma20 < ma60:
+            short_signal = '空头排列'
+        else:
+            short_signal = 'MA5<MA20'
+    else:
+        short_signal = '均线粘合'
+
+    # 短期强度
+    if short_dir == '上涨':
+        spread = (ma5 / ma20 - 1) * 100
+        short_strength = '强势' if spread > 2 else '较强' if spread > 1 else '温和'
+    elif short_dir == '下跌':
+        spread = (ma20 / ma5 - 1) * 100
+        short_strength = '弱势' if spread > 2 else '较弱' if spread > 1 else '温和'
+    else:
+        short_strength = '中性'
+
+    # --- 长期趋势 (MA20 vs MA60) ---
+    if ma60 > 0:
+        long_dir = '上涨' if ma20 > ma60 else '下跌' if ma20 < ma60 else '震荡'
+        if long_dir == '上涨':
+            spread_l = (ma20 / ma60 - 1) * 100
+            long_strength = '强势' if spread_l > 5 else '较强' if spread_l > 2 else '温和'
+            long_signal = 'MA20>MA60 多头'
+        elif long_dir == '下跌':
+            spread_l = (ma60 / ma20 - 1) * 100
+            long_strength = '弱势' if spread_l > 5 else '较弱' if spread_l > 2 else '温和'
+            long_signal = 'MA20<MA60 空头'
+        else:
+            long_strength = '中性'
+            long_signal = '均线胶着'
+    else:
+        long_dir = long_signal = long_strength = '数据不足'
+
+    # --- RSI 判断 ---
+    rsi_signal = ''
+    if rsi > 80: rsi_signal = '严重超买'
+    elif rsi > 70: rsi_signal = '超买区间'
+    elif rsi < 30: rsi_signal = '超卖区间'
+    elif rsi < 20: rsi_signal = '严重超卖'
+
+    # --- MACD 信号 ---
+    macd_signal = ''
+    if macd_dif > macd_dea and macd_val > 0: macd_signal = 'MACD金叉 多头'
+    elif macd_dif < macd_dea and macd_val < 0: macd_signal = 'MACD死叉 空头'
+    elif macd_dif > macd_dea: macd_signal = 'DIF上穿DEA'
+    elif macd_dif < macd_dea: macd_signal = 'DIF下穿DEA'
+
+    # --- 综合判断 ---
+    composite_parts = []
+    risk_parts = []
+
+    if short_dir == '上涨' and long_dir == '上涨':
+        composite_parts.append('短期和长期均呈上涨趋势')
+        composite_parts.append('建议顺势做多')
+    elif short_dir == '上涨' and long_dir == '下跌':
+        composite_parts.append('短期反弹，长期仍偏空')
+        composite_parts.append('建议观望或短线操作')
+    elif short_dir == '下跌' and long_dir == '下跌':
+        composite_parts.append('短期和长期均呈下跌趋势')
+        composite_parts.append('建议回避或做空')
+    elif short_dir == '下跌' and long_dir == '上涨':
+        composite_parts.append('短期回调，长期趋势未破')
+        composite_parts.append('关注支撑位企稳后可做多')
+    else:
+        composite_parts.append('趋势不明确')
+        composite_parts.append('建议观望')
+
+    if rsi_signal:
+        risk_parts.append(f'RSI {rsi:.1f} {rsi_signal}')
+    if macd_signal:
+        risk_parts.append(macd_signal)
+
+    # --- 压力/支撑 ---
+    sr = calc_support_resistance(kline)
+
+    return {
+        'short_term': {
+            'direction': short_dir,
+            'signal': short_signal,
+            'strength': short_strength,
+            'ma5': round(ma5, 2) if ma5 else None,
+            'ma20': round(ma20, 2) if ma20 else None,
+        },
+        'long_term': {
+            'direction': long_dir,
+            'signal': long_signal,
+            'strength': long_strength,
+            'ma20': round(ma20, 2) if ma20 else None,
+            'ma60': round(ma60, 2) if ma60 else None,
+        },
+        'rsi': round(rsi, 1) if rsi else None,
+        'rsi_signal': rsi_signal,
+        'macd': {
+            'dif': round(macd_dif, 3) if macd_dif else 0,
+            'dea': round(macd_dea, 3) if macd_dea else 0,
+            'macd': round(macd_val, 3) if macd_val else 0,
+            'signal': macd_signal,
+        },
+        'composite': '，'.join(composite_parts) if composite_parts else '趋势不明确',
+        'risk': '；'.join(risk_parts) if risk_parts else '无明确风险信号',
+        'sr': sr,
+    }
+
+
+@app.route('/api/commodity/list')
+def commodity_list():
+    return jsonify({'commodities': COMMODITIES, 'akshare_available': AKSHARE_AVAILABLE})
+
+
+@app.route('/api/commodity')
+def commodity_detail():
+    code = request.args.get('code', 'AU0')
+    days = int(request.args.get('days', 365))
+    # 查找商品信息
+    info = next((c for c in COMMODITIES if c['id'] == code), None)
+    if not info:
+        return jsonify({'error': f'未知商品: {code}'}), 400
+
+    kline, err = fetch_commodity_kline(code, days)
+    if err:
+        return jsonify({'error': err}), 500
+
+    # 分析趋势
+    trend = analyze_commodity_trend(kline)
+    indicators = trend  # trend 已经包含所有技术指标
+
+    # 最近一根K线的涨跌幅
+    last = kline[-1] if kline else {}
+    prev = kline[-2] if len(kline) >= 2 else {}
+    change = round(last.get('close', 0) - prev.get('close', 0), 2) if prev else 0
+    change_pct = round(change / prev.get('close', 1) * 100, 2) if prev.get('close', 0) > 0 else 0
+
+    return jsonify({
+        'code': code,
+        'name': info['name'],
+        'short': info['short'],
+        'exchange': info['exchange'],
+        'type': info.get('type', 'domestic'),
+        'kline': kline[-120:],
+        'price': round(last.get('close', 0), 2) if last else 0,
+        'change': change,
+        'change_pct': change_pct,
+        'high': round(last.get('high', 0), 2) if last else 0,
+        'low': round(last.get('low', 0), 2) if last else 0,
+        'open': round(last.get('open', 0), 2) if last else 0,
+        'volume': last.get('volume', 0) if last else 0,
+        'trend': trend,
+        'data_source': 'akshare',
     })
 
 

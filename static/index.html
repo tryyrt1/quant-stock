@@ -102,6 +102,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .btn{flex:1;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;text-align:center}
 .btn-primary{background:linear-gradient(135deg,var(--accent),#3a7bd5);color:#fff}
 .btn-danger{background:rgba(255,71,87,.15);color:var(--up);border:1px solid rgba(255,71,87,.3)}
+.btn-uzi{background:linear-gradient(135deg,#f0c040,#e89020);color:#1a1a2e;border:none;width:100%;padding:12px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer}
+.btn-uzi:disabled{opacity:.5;cursor:not-allowed}
+.btn-uzi.loading{background:linear-gradient(135deg,#888,#666);animation:pulse 1.2s ease-in-out infinite}
+.btn-ms{background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border:none;padding:10px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
+.btn-ms:disabled{opacity:.5;cursor:not-allowed}
+.btn-ms.loading{background:linear-gradient(135deg,#888,#666);animation:pulse 1.2s ease-in-out infinite}
+.btn-sc{background:linear-gradient(135deg,#2ecc71,#27ae60);color:#fff;border:none;padding:10px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
+.uzi-frame{width:100%;height:80vh;border:none;border-radius:8px;background:#fff}
+.uzi-progress{font-size:12px;color:var(--dim);text-align:center;padding:8px}
+.uzi-error{font-size:12px;color:#ff6b6b;text-align:center;padding:8px;background:rgba(255,71,87,.1);border-radius:6px}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
 .btn-secondary{background:rgba(255,255,255,.06);color:var(--dim);border:1px solid rgba(255,255,255,.1)}
 .btn:active{opacity:.8}
 
@@ -198,6 +209,22 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     <div id="patternResults"></div>
   </div>
 
+  <!-- ===== 宏观/商品页 ===== -->
+  <div id="page-commodity" class="hide">
+    <div class="card">
+      <div class="card-title">🛢️ 宏观商品分析</div>
+      <div style="font-size:12px;color:#aaa;margin-bottom:10px">国内期货主力合约技术分析 · 短期/长期趋势判断</div>
+      <div id="commodityGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;max-height:160px;overflow-y:auto;margin-bottom:8px;scrollbar-width:thin">
+        <!-- filled by JS -->
+      </div>
+      <div class="refresh-bar">
+        <span class="info" id="commodityInfo">选择商品查看分析</span>
+        <span style="font-size:10px;color:#555">数据: akshare</span>
+      </div>
+    </div>
+    <div id="commodityResult"></div>
+  </div>
+
   <div class="disclaimer">数据仅供参考，不构成投资建议 | 腾讯财经/东方财富</div>
   <div class="disclaimer" style="color:#555;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:0">China.柳州.Guoa</div>
 </div>
@@ -206,6 +233,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
   <div class="tab" data-tab="detail" onclick="switchTab('detail')"><span class="tab-icon">📋</span>分析报告</div>
   <div class="tab" data-tab="patterns" onclick="switchTab('patterns')"><span class="tab-icon">🎯</span>选股模式</div>
+  <div class="tab" data-tab="commodity" onclick="switchTab('commodity');loadCommodityList()"><span class="tab-icon">🛢️</span>宏观/商品</div>
 </div>
 
 <script>
@@ -309,7 +337,7 @@ function renderPatterns() {
 
   // 按模式名称分组
   const grouped = {}
-  const patternOrder = ['连续上攻', '均线金叉', 'OBV价升创新高', 'OBV横盘', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停']
+  const patternOrder = ['连续上攻', '均线金叉', 'OBV价升创新高', 'OBV横盘', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停', '潜在翻倍']
 
   patterns.forEach(p => {
     if (!grouped[p.pattern_name]) grouped[p.pattern_name] = []
@@ -327,6 +355,7 @@ function renderPatterns() {
     '长下影+中阳': { bg: 'rgba(0,230,200,.08)', border: 'rgba(0,230,200,.2)', text: '#00e6c8' },
     '超跌筛选': { bg: 'rgba(255,70,70,.08)', border: 'rgba(255,70,70,.2)', text: '#ff4646' },
     '首板涨停': { bg: 'rgba(255,215,0,.08)', border: 'rgba(255,215,0,.2)', text: '#ffd700' },
+    '潜在翻倍': { bg: 'rgba(255,100,50,.08)', border: 'rgba(255,100,50,.2)', text: '#ff6432' },
   }
   patternOrder.forEach(name => {
     const items = grouped[name] || []
@@ -498,6 +527,7 @@ async function loadDetail(code, market) {
 }
 
 function renderReport(data) {
+  window._lastStockData = data  // save for tech score button
   const q = data.quote || {}
   const f = data.factors || {}
   const k = data.kline || []
@@ -554,7 +584,9 @@ function renderReport(data) {
     <!-- 行情头部 -->
     <div class="card">
       <div class="detail-header">
-        <div class="dt-name">${q.name || data.code}<span class="dt-code"> ${data.market==='sh'?'SH':'SZ'}.${data.code}</span></div>
+        <div class="dt-name">${q.name || data.code}<span class="dt-code"> ${data.market==='sh'?'SH':'SZ'}.${data.code}</span>
+          <span class="ds-badge" style="font-size:10px;background:rgba(0,210,255,.1);color:var(--accent);border:1px solid rgba(0,210,255,.2);border-radius:4px;padding:1px 6px;margin-left:6px;vertical-align:middle">📡 ${data.data_source||'tencent'}</span>
+        </div>
         <div><span class="dt-price ${chgCls}">${q.price ? q.price.toFixed(2) : '--'}</span><span class="dt-chg ${chgCls}">${q.changePercent ? (q.changePercent>=0?'+':'')+q.changePercent.toFixed(2)+'%' : ''}</span></div>
       </div>
       <div class="detail-grid">
@@ -653,6 +685,17 @@ function renderReport(data) {
         <button class="btn btn-primary" onclick="showHome()">← 返回列表</button>
         <button class="btn btn-danger" onclick="removeStock('${data.code}','${data.market}')">✕ 删除自选</button>
       </div>
+      <div style="margin-top:8px">
+        <button class="btn btn-uzi" onclick="runUziAnalysis('${data.code}','${data.market}')" id="uziBtn">
+          ⚡ UZI 深度分析
+        </button>
+      </div>
+      <div style="margin-top:6px;display:flex;gap:6px">
+        <button class="btn btn-ms" onclick="runMinesweeper('${data.code}')" id="msBtn" style="flex:1">🔍 排雷检测</button>
+        <button class="btn btn-sc" onclick="showTechScore()" id="scBtn" style="flex:1">📐 技术评分</button>
+      </div>
+      <div id="uziResult" style="margin-top:8px;display:none"></div>
+      <div id="msResult" style="margin-top:8px;display:none"></div>
     </div>
   `
 
@@ -665,14 +708,521 @@ function switchTab(tab) {
   document.getElementById('page-home').classList.toggle('hide',tab!=='home')
   document.getElementById('page-detail').classList.toggle('hide',tab!=='detail')
   document.getElementById('page-patterns').classList.toggle('hide',tab!=='patterns')
+  document.getElementById('page-commodity').classList.toggle('hide',tab!=='commodity')
 }
 function showHome() { switchTab('home') }
 function showDetail() { switchTab('detail') }
+
+function runUziAnalysis(code, market) {
+  const btn = document.getElementById('uziBtn')
+  const result = document.getElementById('uziResult')
+  btn.disabled = true
+  btn.innerHTML = '<span class="spinner"></span> UZI 分析中 (约1-2分钟)...'
+  btn.className = 'btn btn-uzi loading'
+  result.style.display = 'block'
+  result.innerHTML = '<div class="uzi-progress">⏳ 启动 UZI 深度分析引擎...</div>'
+
+  fetch(`/api/stock/${code}/uzi?market=${market}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status !== 'running') throw new Error(data.msg || '启动失败')
+      const taskId = data.task_id
+      // 轮询状态
+      const poll = setInterval(() => {
+        fetch(`/api/stock/${code}/uzi/status`)
+          .then(r => r.json())
+          .then(s => {
+            if (s.status === 'done') {
+              clearInterval(poll)
+              btn.disabled = false
+              btn.innerHTML = '⚡ UZI 深度分析'
+              btn.className = 'btn btn-uzi'
+              result.innerHTML = `<iframe class="uzi-frame" src="${s.url}"></iframe>`
+            } else if (s.status === 'error') {
+              clearInterval(poll)
+              btn.disabled = false
+              btn.innerHTML = '⚡ UZI 深度分析'
+              btn.className = 'btn btn-uzi'
+              result.innerHTML = `<div class="uzi-error">❌ 分析失败: ${s.msg || '未知错误'}</div>`
+            } else {
+              result.innerHTML = '<div class="uzi-progress">⏳ 分析进行中 (采集22维数据中)...</div>'
+            }
+          })
+      }, 5000)
+    })
+    .catch(err => {
+      btn.disabled = false
+      btn.innerHTML = '⚡ UZI 深度分析'
+      btn.className = 'btn btn-uzi'
+      result.innerHTML = `<div class="uzi-error">❌ 请求失败: ${err.message}</div>`
+    })
+}
+
+function fmtPct(v) {
+  if (v===null||v===undefined||v==='') return '--';
+  return (v*100).toFixed(1)+'%';
+}
+function fmtNum(v) {
+  if (v===null||v===undefined||v==='') return '--';
+  if (Math.abs(v)>=1e8) return (v/1e8).toFixed(2)+'亿';
+  if (Math.abs(v)>=1e4) return (v/1e4).toFixed(2)+'万';
+  return v.toFixed(2);
+}
+
+function renderMinesweeper(data) {
+  var si = data.stock_info || {};
+  var html = '<div style="font-size:13px;color:#eee;max-height:420px;overflow:auto;padding:8px">';
+
+  // Stock info header
+  html += '<div style="background:#1a2332;border-radius:6px;padding:10px;margin-bottom:8px">';
+  html += '<b style="font-size:15px">' + (si.name||'') + '</b>';
+  html += '<span style="color:#999;margin-left:8px">' + (si.industry||'') + '</span>';
+  if (si.ipo_date) html += '<br><span style="color:#888;font-size:12px">上市日期: ' + si.ipo_date + '</span>';
+  html += '</div>';
+
+  // Profit table
+  var profit = data.profit || [];
+  if (profit.length > 0) {
+    html += '<div style="background:#1a2332;border-radius:6px;padding:10px;margin-bottom:8px">';
+    html += '<div style="color:#ffa726;font-weight:bold;margin-bottom:6px">📊 盈利能力</div>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<tr style="color:#888"><td>指标</td>';
+    profit.forEach(function(p) { html += '<td style="text-align:right;padding:2px 4px">' + (p.year||'') + '</td>'; });
+    html += '</tr>';
+    var rows = [
+      {k:'roeAvg', l:'ROE', f:fmtPct},
+      {k:'gpMargin', l:'毛利率', f:fmtPct},
+      {k:'npMargin', l:'净利率', f:fmtPct},
+      {k:'epsTTM', l:'EPS', f:fmtNum},
+      {k:'MBRevenue', l:'营收', f:fmtNum},
+      {k:'netProfit', l:'净利润', f:fmtNum},
+    ];
+    rows.forEach(function(r) {
+      html += '<tr><td style="color:#aaa">' + r.l + '</td>';
+      profit.forEach(function(p) {
+        var v = p[r.k];
+        html += '<td style="text-align:right;padding:2px 4px;color:#eee">' + r.f(v) + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</table></div>';
+  }
+
+  // Debt table
+  var debt = data.debt || [];
+  if (debt.length > 0) {
+    html += '<div style="background:#1a2332;border-radius:6px;padding:10px;margin-bottom:8px">';
+    html += '<div style="color:#66bb6a;font-weight:bold;margin-bottom:6px">🏦 偿债能力</div>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<tr style="color:#888"><td>指标</td>';
+    debt.forEach(function(d) { html += '<td style="text-align:right;padding:2px 4px">' + (d.year||'') + '</td>'; });
+    html += '</tr>';
+    var dRows = [
+      {k:'currentRatio', l:'流动比率', f:function(v){return v?v.toFixed(2):'--'}},
+      {k:'quickRatio', l:'速动比率', f:function(v){return v?Math.abs(v).toFixed(2):'--'}},
+      {k:'liabilityToAsset', l:'资产负债率', f:fmtPct},
+    ];
+    dRows.forEach(function(r) {
+      html += '<tr><td style="color:#aaa">' + r.l + '</td>';
+      debt.forEach(function(d) {
+        html += '<td style="text-align:right;padding:2px 4px;color:#eee">' + r.f(d[r.k]) + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</table></div>';
+  }
+
+  // Growth table
+  var growth = data.growth || [];
+  if (growth.length > 0) {
+    html += '<div style="background:#1a2332;border-radius:6px;padding:10px;margin-bottom:8px">';
+    html += '<div style="color:#42a5f5;font-weight:bold;margin-bottom:6px">📈 成长能力</div>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<tr style="color:#888"><td>指标</td>';
+    growth.forEach(function(g) { html += '<td style="text-align:right;padding:2px 4px">' + (g.year||'') + '</td>'; });
+    html += '</tr>';
+    var gRows = [
+      {k:'YOYNI', l:'净利润同比', f:fmtPct},
+      {k:'YOYEPSBasic', l:'EPS同比', f:fmtPct},
+      {k:'YOYAsset', l:'总资产同比', f:fmtPct},
+    ];
+    gRows.forEach(function(r) {
+      html += '<tr><td style="color:#aaa">' + r.l + '</td>';
+      growth.forEach(function(g) {
+        html += '<td style="text-align:right;padding:2px 4px;color:#eee">' + r.f(g[r.k]) + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</table></div>';
+  }
+
+  html += '<div style="color:#666;font-size:11px;text-align:center">数据来源: Baostock（免费）</div>';
+  html += '</div>';
+  return html;
+}
+
+function showTechScore(data) {
+  // If called without data, try global
+  if (!data) data = window._lastStockData;
+  if (!data) return;
+  var result = document.getElementById('msResult');
+  var scBtn = document.getElementById('scBtn');
+  result.style.display = 'block';
+
+  var ind = data.indicators || {};
+  var quote = data.quote || {};
+  var price = quote.price || 0;
+  var ma5 = ind.ma5, ma20 = ind.ma20, ma60 = ind.ma60;
+  var rsi = ind.rsi;
+  var macd = ind.macd, macd_dif = ind.macd_dif, macd_dea = ind.macd_dea;
+
+  // Score components (each 0-25, total 0-100)
+  var score = 50, trendScore = 50, momentumScore = 50, volumeScore = 50, stabilityScore = 50;
+
+  // 1. Trend score (price vs MA)
+  if (price && ma5 && ma20) {
+    var aboveMA5 = (price / ma5 - 1) * 100;
+    var aboveMA20 = (price / ma20 - 1) * 100;
+    if (aboveMA5 > 0 && aboveMA20 > 0) trendScore = 75 + Math.min(aboveMA5, 5) * 5;
+    else if (aboveMA5 < -5 && aboveMA20 < -5) trendScore = Math.max(10, 50 + aboveMA5 * 3);
+    else trendScore = 55;
+    // MA alignment bonus
+    if (ma5 > ma20 && ma20 > ma60) trendScore += 10;
+    else if (ma5 < ma20 && ma20 < ma60) trendScore -= 10;
+  }
+  trendScore = Math.max(0, Math.min(100, trendScore));
+
+  // 2. Momentum score (RSI + MACD)
+  if (rsi !== undefined) {
+    if (rsi > 80) momentumScore = 30; // overbought
+    else if (rsi > 60) momentumScore = 75;
+    else if (rsi > 40) momentumScore = 60;
+    else if (rsi > 30) momentumScore = 40;
+    else if (rsi > 20) momentumScore = 25; // oversold
+    else momentumScore = 15;
+  }
+  if (macd !== undefined && macd_dif !== undefined && macd_dea !== undefined) {
+    if (macd_dif > macd_dea && macd > 0) momentumScore += 15; // bullish
+    else if (macd_dif < macd_dea && macd < 0) momentumScore -= 10;
+    else if (macd_dif > macd_dea) momentumScore += 5;
+  }
+  momentumScore = Math.max(0, Math.min(100, momentumScore));
+
+  // 3. Volume score (from kline)
+  var kline = data.kline || [];
+  if (kline.length >= 10) {
+    var latestVol = kline[kline.length-1][5] || 0;
+    var avgVol = 0;
+    for (var i = kline.length-10; i < kline.length-1; i++) { avgVol += kline[i][5] || 0; }
+    avgVol /= 9;
+    if (avgVol > 0) {
+      var volRatio = latestVol / avgVol;
+      if (volRatio > 2) volumeScore = 85;  // breakout volume
+      else if (volRatio > 1.5) volumeScore = 70;
+      else if (volRatio > 0.8) volumeScore = 55;
+      else if (volRatio > 0.5) volumeScore = 40;
+      else volumeScore = 30;
+    }
+  }
+  volumeScore = Math.max(0, Math.min(100, volumeScore));
+
+  // 4. Stability (price volatility from kline)
+  if (kline.length >= 20) {
+    var prices = [];
+    for (var i = kline.length-20; i < kline.length; i++) { prices.push(kline[i][2] || 0); }  // close
+    var mean = prices.reduce(function(a,b){return a+b},0) / prices.length;
+    var variance = prices.reduce(function(a,b){return a+(b-mean)*(b-mean)},0) / prices.length;
+    var stdDev = Math.sqrt(variance);
+    var cv = stdDev / mean;
+    if (cv < 0.02) stabilityScore = 80;
+    else if (cv < 0.04) stabilityScore = 65;
+    else if (cv < 0.07) stabilityScore = 50;
+    else if (cv < 0.1) stabilityScore = 35;
+    else stabilityScore = 20;
+  }
+  stabilityScore = Math.max(0, Math.min(100, stabilityScore));
+
+  // Composite (weighted)
+  score = trendScore * 0.35 + momentumScore * 0.30 + volumeScore * 0.20 + stabilityScore * 0.15;
+  score = Math.round(score);
+
+  var advice = score >= 75 ? '强烈看多' : score >= 60 ? '看多' : score >= 45 ? '中性' : score >= 30 ? '看空' : '强烈看空';
+  var scoreColor = score >= 60 ? '#2ecc71' : score >= 45 ? '#f39c12' : score >= 30 ? '#e74c3c' : '#c0392b';
+
+  function bar(v) {
+    var p = Math.round(v);
+    return '<div style="display:flex;align-items:center;margin:4px 0"><span style="width:70px;color:#999;font-size:12px">' + arguments[1] + '</span><div style="flex:1;height:16px;background:#2a3a4e;border-radius:8px;overflow:hidden"><div style="width:'+p+'%;height:100%;background:linear-gradient(90deg,'+(p>=60?'#2ecc71':p>=45?'#f39c12':'#e74c3c')+','+(p>=60?'#27ae60':p>=45?'#e67e22':'#c0392b')+');border-radius:8px"></div></div><span style="width:35px;text-align:right;color:#fff;font-size:12px">'+p+'</span></div>';
+  }
+
+  var html = '<div style="background:#1a2332;border-radius:8px;padding:12px;font-size:13px;color:#eee">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
+  html += '<span style="font-weight:bold;font-size:15px">📐 技术评分</span>';
+  html += '<span style="background:'+scoreColor+';color:#fff;padding:4px 12px;border-radius:12px;font-size:16px;font-weight:bold">'+score+'</span>';
+  html += '</div>';
+  html += '<div style="text-align:center;margin-bottom:10px"><span style="color:'+scoreColor+';font-size:14px;font-weight:bold;background:'+scoreColor+'22;padding:4px 16px;border-radius:4px">操作建议: ' + advice + '</span></div>';
+  html += bar(trendScore, '趋势', 0) + bar(momentumScore, '动量', 1) + bar(volumeScore, '量能', 2) + bar(stabilityScore, '稳定', 3);
+  if (rsi !== undefined) html += '<div style="margin-top:6px;color:#888;font-size:12px">RSI: '+rsi.toFixed(1)+' | MACD: '+(macd?macd.toFixed(3):'-')+'</div>';
+  html += '</div>';
+
+  result.innerHTML = html;
+}
+
+function runMinesweeper(code) {
+  const btn = document.getElementById('msBtn')
+  const result = document.getElementById('msResult')
+  btn.disabled = true
+  btn.innerHTML = '⏳ 排雷检测中...'
+  btn.className = 'btn btn-ms loading'
+  result.style.display = 'block'
+  result.innerHTML = '<div class="uzi-progress">⏳ 获取财务数据...</div>'
+
+  fetch(`/api/stock/${code}/minesweeper`, { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      const poll = setInterval(() => {
+        fetch('/api/stock/' + code + '/minesweeper/status')
+          .then(r => r.json())
+          .then(s => {
+            if (s.status === 'done') {
+              clearInterval(poll)
+              btn.disabled = false
+              btn.innerHTML = '🔍 排雷检测'
+              btn.className = 'btn btn-ms'
+              fetch(s.url).then(r=>r.json()).then(data => {
+                result.innerHTML = renderMinesweeper(data);
+              })
+            } else if (s.status === 'error') {
+              clearInterval(poll)
+              btn.disabled = false
+              btn.innerHTML = '🔍 排雷检测'
+              btn.className = 'btn btn-ms'
+              result.innerHTML = `<div class="uzi-error">❌ ${s.msg || '失败'}</div>`
+            }
+          })
+      }, 3000)
+    })
+    .catch(err => {
+      btn.disabled = false; btn.innerHTML = '🔍 排雷检测'; btn.className = 'btn btn-ms'
+      result.innerHTML = `<div class="uzi-error">❌ ${err.message}</div>`
+    })
+}
+
+function switchDataSource(source) {
+  fetch('/api/datasource', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({source}) })
+    .then(r=>r.json())
+    .then(d => { alert('数据源已切换为: ' + d.active) })
+}
 
 function fmtVol(v) {
   if (!v || isNaN(v)) return '--'
   if (v >= 10000) return (v/10000).toFixed(2) + '万'
   return v.toFixed(0)
+}
+
+// ===================== Commodity / Macro =====================
+let _commodities = []
+
+async function loadCommodityList() {
+  const data = await api('/api/commodity/list')
+  if (!data || !data.commodities) return
+  _commodities = data.commodities
+  const grid = document.getElementById('commodityGrid')
+  grid.innerHTML = data.commodities.map(c =>
+    `<button class="btn btn-secondary" style="font-size:12px;padding:6px;text-align:center"
+      onclick="loadCommodity('${c.id}')">${c.name}</button>`
+  ).join('')
+  // Auto-load first commodity
+  if (!document.getElementById('commodityResult').innerHTML.trim()) {
+    loadCommodity(data.commodities[0].id)
+  }
+}
+
+async function loadCommodity(code) {
+  const result = document.getElementById('commodityResult')
+  result.innerHTML = '<div class="card"><div style="text-align:center;padding:20px"><span class="spinner"></span>加载商品数据...</div></div>'
+
+  const data = await api(`/api/commodity?code=${code}`)
+  if (!data || data.error) {
+    result.innerHTML = `<div class="card" style="text-align:center;padding:20px;color:var(--dim)">${data ? data.error : '加载失败'}</div>`
+    return
+  }
+
+  renderCommodity(data)
+}
+
+function renderCommodity(data) {
+  const trend = data.trend || {}
+  const st = trend.short_term || {}
+  const lt = trend.long_term || {}
+  const sr = trend.sr || {}
+  const macd = trend.macd || {}
+  const kline = data.kline || []
+
+  const priceCls = data.change >= 0 ? 'up' : 'down'
+  const priceSign = data.change >= 0 ? '+' : ''
+
+  // Trend color mapping
+  function trendColor(dir) {
+    if (dir === '上涨') return '#2ed573'
+    if (dir === '下跌') return '#ff4757'
+    return '#ffa502'
+  }
+  function strengthBadge(dir, strength) {
+    if (!dir || dir === '数据不足' || dir === '震荡') return '<span style="color:#888">中性</span>'
+    const c = trendColor(dir)
+    return `<span style="color:${c};font-weight:600">${dir}</span> <span style="color:#aaa;font-size:11px">${strength || ''}</span>`
+  }
+
+  // Mini chart: 60-day close line + MA5/MA20 overlay
+  let chartHtml = ''
+  if (kline.length >= 10) {
+    const chartData = kline.slice(-60)
+    const prices = chartData.map(k => k.close)
+    const dates = chartData.map(k => k.date)
+    const mn = Math.min(...prices)
+    const mx = Math.max(...prices)
+    const range = mx - mn || 1
+
+    // Calculate MAs for chart
+    const closes = kline.map(k => k.close)
+    const ma5Arr = [], ma20Arr = []
+    for (let i = 0; i < closes.length; i++) {
+      if (i >= 4) ma5Arr.push(closes.slice(i-4, i+1).reduce((a,b)=>a+b,0)/5)
+      else ma5Arr.push(null)
+      if (i >= 19) ma20Arr.push(closes.slice(i-19, i+1).reduce((a,b)=>a+b,0)/20)
+      else ma20Arr.push(null)
+    }
+    const chartMA5 = ma5Arr.slice(-60)
+    const chartMA20 = ma20Arr.slice(-60)
+
+    function toY(price) { return 100 - ((price - mn) / range * 80 + 10) }
+
+    let linePath = prices.map((p, i) => `${i * (100/(prices.length-1))},${toY(p)}`).join(' ')
+    let ma5Path = chartMA5.map((p, i) => p ? `${i * (100/(prices.length-1))},${toY(p)}` : '').filter(Boolean).join(' ')
+    let ma20Path = chartMA20.map((p, i) => p ? `${i * (100/(prices.length-1))},${toY(p)}` : '').filter(Boolean).join(' ')
+
+    chartHtml = `<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;height:120px;background:#1a1a3e;border-radius:6px;overflow:hidden">
+      <polyline fill="none" stroke="#ff4757" stroke-width="0.5" points="${linePath}"/>
+      <polyline fill="none" stroke="#00d2ff" stroke-width="0.4" stroke-dasharray="1,0.5" points="${ma5Path}"/>
+      <polyline fill="none" stroke="#2ed573" stroke-width="0.4" stroke-dasharray="0.5,0.5" points="${ma20Path}"/>
+      <text x="2" y="92" fill="#ff4757" font-size="2.5">收盘价</text>
+      <text x="35" y="92" fill="#00d2ff" font-size="2.5">MA5</text>
+      <text x="60" y="92" fill="#2ed573" font-size="2.5">MA20</text>
+      <text x="2" y="8" fill="#888" font-size="2">${mx.toFixed(0)}</text>
+      <text x="2" y="96" fill="#888" font-size="2">${mn.toFixed(0)}</text>
+    </svg>`
+  }
+
+  // Trend signal color
+  const stColor = trendColor(st.direction)
+  const ltColor = trendColor(lt.direction)
+
+  const html = `
+    <!-- Price header -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:22px;font-weight:700">${data.name || data.code}</span>
+          <span style="font-size:12px;color:#888;margin-left:8px">${data.short || ''}</span>
+          <span style="font-size:11px;background:rgba(0,210,255,.1);color:var(--accent);border:1px solid rgba(0,210,255,.2);border-radius:4px;padding:1px 6px;margin-left:6px">${data.exchange || ''}</span>
+        </div>
+      </div>
+      <div style="margin-top:8px">
+        <span class="dt-price ${priceCls}">${data.price || '--'}</span>
+        <span class="dt-chg ${priceCls}">${priceSign}${data.change || 0} (${priceSign}${data.change_pct || 0}%)</span>
+      </div>
+      <div class="detail-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="dg-item"><span class="dg-label">今开</span><span class="dg-value">${data.open || '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">最高</span><span class="dg-value up">${data.high || '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">最低</span><span class="dg-value down">${data.low || '--'}</span></div>
+        <div class="dg-item"><span class="dg-label">成交量</span><span class="dg-value">${fmtVol(data.volume)}</span></div>
+      </div>
+    </div>
+
+    <!-- Mini chart -->
+    <div class="card">
+      <div class="card-title">📈 60日走势 (红:收盘价 蓝:MA5 绿:MA20)</div>
+      ${chartHtml}
+      ${kline.length >= 2 ? (function(){
+        const f = kline[0], l = kline[kline.length-1]
+        const chg60 = ((l.close - f.close) / f.close * 100).toFixed(1)
+        return '<div style="text-align:center;font-size:11px;color:#888;margin-top:4px">60日涨跌幅: <span class="'+(chg60>=0?'up':'down')+'">'+chg60+'%</span></div>'
+      })() : ''}
+    </div>
+
+    <!-- Trend analysis -->
+    <div class="card">
+      <div class="card-title">📊 趋势分析</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div style="background:rgba(46,213,115,.05);border-radius:8px;padding:12px;border:1px solid ${stColor}33">
+          <div style="font-size:11px;color:#888;margin-bottom:4px">短期趋势<span style="margin-left:4px;font-size:10px;color:#555">(MA5 vs MA20)</span></div>
+          <div style="font-size:20px;font-weight:700;color:${stColor}">${st.direction || '--'}</div>
+          <div style="font-size:12px;color:#aaa;margin-top:4px">${st.signal || ''} ${st.strength ? '· '+st.strength : ''}</div>
+          ${st.ma5 ? '<div style="font-size:11px;color:#888;margin-top:2px">MA5: '+st.ma5+' | MA20: '+st.ma20+'</div>' : ''}
+        </div>
+        <div style="background:rgba(0,210,255,.05);border-radius:8px;padding:12px;border:1px solid ${ltColor}33">
+          <div style="font-size:11px;color:#888;margin-bottom:4px">长期趋势<span style="margin-left:4px;font-size:10px;color:#555">(MA20 vs MA60)</span></div>
+          <div style="font-size:20px;font-weight:700;color:${ltColor}">${lt.direction || '--'}</div>
+          <div style="font-size:12px;color:#aaa;margin-top:4px">${lt.signal || ''} ${lt.strength ? '· '+lt.strength : ''}</div>
+          ${lt.ma20 ? '<div style="font-size:11px;color:#888;margin-top:2px">MA20: '+lt.ma20+' | MA60: '+lt.ma60+'</div>' : ''}
+        </div>
+      </div>
+      <div style="background:rgba(255,255,255,.03);border-radius:6px;padding:10px;margin-bottom:6px">
+        <div style="font-size:12px;color:#ddd">💡 综合判断</div>
+        <div style="font-size:13px;color:#aaa;margin-top:4px">${trend.composite || '--'}</div>
+      </div>
+      ${trend.risk ? '<div style="font-size:12px;color:#ffa502;background:rgba(255,165,2,.08);border-radius:6px;padding:8px 10px">⚠️ '+trend.risk+'</div>' : ''}
+    </div>
+
+    <!-- Technical indicators -->
+    <div class="card">
+      <div class="card-title">📐 技术指标</div>
+      <div class="ind-grid">
+        <div class="ind-item"><div class="ind-label">RSI(14)</div><div class="ind-value" style="color:${trend.rsi > 70 ? '#ff4757' : trend.rsi < 30 ? '#2ed573' : '#00d2ff'}">${trend.rsi || '--'}</div></div>
+        <div class="ind-item"><div class="ind-label">MACD</div><div class="ind-value">${macd.macd != null ? macd.macd.toFixed(3) : '--'}</div></div>
+        <div class="ind-item"><div class="ind-label">DIF</div><div class="ind-value" style="color:${macd.dif > macd.dea ? '#2ed573' : '#ff4757'}">${macd.dif != null ? macd.dif.toFixed(3) : '--'}</div></div>
+        <div class="ind-item"><div class="ind-label">DEA</div><div class="ind-value">${macd.dea != null ? macd.dea.toFixed(3) : '--'}</div></div>
+      </div>
+      ${macd.signal ? '<div style="margin-top:6px;font-size:12px;color:#aaa;text-align:center">MACD信号: <span style="color:'+(macd.signal.includes('金叉')||macd.signal.includes('多头')?'#2ed573':'#ff4757')+'">'+macd.signal+'</span></div>' : ''}
+      ${trend.rsi_signal ? '<div style="font-size:12px;color:#ffa502;text-align:center">'+trend.rsi_signal+'</div>' : ''}
+    </div>
+
+    <!-- Support / Resistance -->
+    <div class="card">
+      <div class="card-title">📊 支撑位 &amp; 压力位</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="background:rgba(255,71,87,.08);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">压力位 R2</div>
+          <div class="up" style="font-size:16px;font-weight:700">${sr.R2 ? sr.R2.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(255,71,87,.05);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">压力位 R1</div>
+          <div class="up" style="font-size:16px;font-weight:700">${sr.R1 ? sr.R1.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(255,255,255,.03);border-radius:8px;padding:10px;text-align:center;border:1px solid rgba(255,255,255,.08)">
+          <div style="font-size:10px;color:var(--dim)">当前价</div>
+          <div style="font-size:18px;font-weight:700">${data.price || '--'}</div>
+        </div>
+        <div style="background:rgba(255,255,255,.03);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">枢轴点</div>
+          <div style="font-size:14px;font-weight:600;color:var(--accent)">${sr.Pivot ? sr.Pivot.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(46,213,115,.05);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">支撑位 S1</div>
+          <div class="down" style="font-size:16px;font-weight:700">${sr.S1 ? sr.S1.toFixed(2) : '--'}</div>
+        </div>
+        <div style="background:rgba(46,213,115,.08);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--dim)">支撑位 S2</div>
+          <div class="down" style="font-size:16px;font-weight:700">${sr.S2 ? sr.S2.toFixed(2) : '--'}</div>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:#aaa;text-align:center">
+        ${sr.nearest_support && data.price ? '最近支撑: ' + sr.nearest_support.toFixed(2) + ' | 最近压力: ' + (sr.nearest_resistance||'').toFixed(2) : ''}
+      </div>
+    </div>
+  `
+
+  document.getElementById('commodityResult').innerHTML = html
 }
 
 // ===================== Init =====================
