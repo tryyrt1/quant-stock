@@ -37,6 +37,7 @@ from engine.factors import analyze_factors
 from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
 from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, PREDEFINED
+from engine.decision import make_decision
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
 STATIC_STOCKS = [
@@ -510,6 +511,68 @@ def stock_detail(code):
         'sentiment': round(sentiment_score, 2),
         'data_source': get_active_data_source(),
     })
+
+
+# ─── 综合决策 API ───
+
+@app.route('/api/stock/<code>/decision')
+def stock_decision_api(code):
+    """综合买卖决策: 整合技术/形态/量价/板块, 输出明确信号"""
+    market = request.args.get('market', 'sh')
+    full_code = market + code
+
+    # 获取 K 线
+    kline = fetch_kline(full_code, 120)
+    if not kline or len(kline) < 20:
+        return jsonify({"error": "K线数据不足", "signal": "数据不足", "score": 0})
+
+    closes = [k['close'] for k in kline]
+
+    # 获取行情
+    quotes = fetch_tencent_quote(full_code)
+    quote = quotes.get(code, {}) if quotes else {}
+
+    # 支撑/压力位
+    from engine.indicators import calc_support_resistance
+    sr = calc_support_resistance(kline) if len(kline) >= 20 else {}
+
+    # 形态识别
+    pat_results = scan_patterns({full_code: kline}) if len(kline) >= 20 else {}
+    patterns = pat_results.get(full_code, [])
+
+    # 板块上下文 (从最新板块快照获取)
+    sector_ctx = None
+    try:
+        snap_path = os.path.join(os.path.dirname(__file__), 'data', 'snapshots', 'sectors.json')
+        if os.path.exists(snap_path):
+            with open(snap_path) as f:
+                snap = json.load(f)
+            sectors = snap.get("sectors", [])
+            # 模糊匹配代码所属板块
+            for sec in sectors:
+                for stk in sec.get("stocks", []):
+                    if stk.get("code") == code:
+                        sector_ctx = {
+                            "up_count": sec.get("up_count", 0),
+                            "down_count": sec.get("down_count", 0),
+                            "pattern_count": sec.get("pattern_count", 0),
+                            "sector_name": sec.get("name", ""),
+                        }
+                        break
+                if sector_ctx:
+                    break
+    except:
+        pass
+
+    decision = make_decision(closes, kline, patterns, sr, sector_ctx)
+
+    # 附带当前价格和涨跌幅
+    decision["price"] = quote.get("price", 0)
+    decision["change_pct"] = quote.get("changePercent", 0)
+    decision["name"] = quote.get("name", "")
+    decision["code"] = code
+
+    return jsonify(decision)
 
 
 # ─── UZI 深度分析任务存储 ───

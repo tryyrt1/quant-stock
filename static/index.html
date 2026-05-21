@@ -539,16 +539,20 @@ async function loadDetail(code, market) {
   showDetail()
   document.getElementById('reportContent').innerHTML = `<div class="card"><div class="loading" style="text-align:center;padding:40px"><span class="spinner"></span>加载分析数据...</div></div>`
 
-  const data = await api(`/api/stock/${code}?market=${market}`)
+  // 并行获取常规数据和综合决策
+  const [data, decision] = await Promise.all([
+    api(`/api/stock/${code}?market=${market}`),
+    api(`/api/stock/${code}/decision?market=${market}`),
+  ])
   if (!data) {
     document.getElementById('reportContent').innerHTML = '<div class="card" style="text-align:center;padding:40px;color:var(--dim)">获取数据失败</div>'
     return
   }
 
-  renderReport(data)
+  renderReport(data, decision)
 }
 
-function renderReport(data) {
+function renderReport(data, decision) {
   window._lastStockData = data  // save for tech score button
   const q = data.quote || {}
   const f = data.factors || {}
@@ -568,6 +572,64 @@ function renderReport(data) {
   else if (displayScore >= 55) scoreColor = '#00d2ff'
   else if (displayScore >= 40) scoreColor = '#ffa502'
   else scoreColor = '#2ed573'
+
+  // ─── 综合决策面板 ───
+  let decisionHtml = ''
+  if (decision && decision.signal) {
+    const d = decision
+    const sigColors = {'买入':'#ff4757','增持':'#ff6b81','持有':'#00d2ff','减仓':'#ffa502','卖出':'#2ed573'}
+    const bgColors = {'买入':'rgba(255,71,87,.12)','增持':'rgba(255,107,129,.1)','持有':'rgba(0,210,255,.1)','减仓':'rgba(255,165,2,.1)','卖出':'rgba(46,213,112,.1)'}
+    const sc = sigColors[d.signal] || '#888'
+    const bg = bgColors[d.signal] || 'rgba(255,255,255,.04)'
+
+    // 维度的中文名
+    const dimLabels = {trend:'趋势',patterns:'形态',price_level:'价位',volume:'量能',sector:'板块'}
+
+    // 构建维度小条
+    const bars = Object.entries(d.details || {}).map(([key, v]) => {
+      const label = dimLabels[key] || key
+      const pct = Math.min(100, Math.max(0, v.score))
+      const cl = pct >= 65 ? '#ff4757' : pct >= 45 ? '#00d2ff' : '#ffa502'
+      return `<div style="margin:2px 0"><div style="display:flex;justify-content:space-between;font-size:10px;color:#aaa"><span>${label}</span><span>${Math.round(pct)}</span></div><div style="height:4px;background:rgba(255,255,255,.06);border-radius:2px"><div style="width:${pct}%;height:100%;background:${cl};border-radius:2px"></div></div></div>`
+    }).join('')
+
+    // 理由标签
+    const reasonChips = (d.reasons || []).slice(0, 5).map(r =>
+      `<span style="display:inline-block;font-size:10px;padding:2px 6px;margin:2px;background:rgba(255,255,255,.06);border-radius:4px;color:#ccc">${r}</span>`
+    ).join('')
+
+    decisionHtml = `
+    <div class="card" style="border-left:4px solid ${sc};background:${bg}">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <!-- 大信号 -->
+        <div style="text-align:center;min-width:80px">
+          <div style="font-size:28px;font-weight:800;color:${sc}">${d.signal}</div>
+          <div style="font-size:10px;color:#888">${d.sub}</div>
+        </div>
+        <!-- 评分环 -->
+        <div style="text-align:center">
+          <div class="score-ring" style="border:3px solid ${sc};width:48px;height:48px;font-size:16px;margin:0 auto">
+            <span style="position:relative;z-index:1">${d.score}</span>
+          </div>
+          <div style="font-size:9px;color:#888;margin-top:2px">综合评分</div>
+        </div>
+        <!-- 价格 -->
+        <div style="text-align:center;min-width:70px">
+          <div style="font-size:18px;font-weight:700;color:#eee">${d.price ? d.price.toFixed(2) : '--'}</div>
+          <div style="font-size:11px" class="${d.change_pct >= 0 ? 'up' : 'down'}">${d.change_pct >= 0 ? '+' : ''}${(d.change_pct || 0).toFixed(2)}%</div>
+        </div>
+        <!-- 理由 -->
+        <div style="flex:1;min-width:160px">
+          <div style="font-size:10px;color:#888;margin-bottom:2px">决策依据</div>
+          ${reasonChips}
+        </div>
+      </div>
+      <!-- 维度评分条 -->
+      <div style="margin-top:8px;display:grid;grid-template-columns:repeat(5,1fr);gap:4px">
+        ${bars}
+      </div>
+    </div>`
+  }
 
   // Factor levels
   const levels = f.levels || {}
@@ -603,6 +665,7 @@ function renderReport(data) {
   }
 
   const html = `
+    ${decisionHtml}
     <!-- 行情头部 -->
     <div class="card">
       <div class="detail-header">
