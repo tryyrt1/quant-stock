@@ -38,6 +38,7 @@ from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
 from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, PREDEFINED
 from engine.decision import make_decision
+from engine.prediction_tracker import record_prediction, verify_predictions, get_signal_stats, get_stock_stats, get_recent_results, is_record_time
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
 STATIC_STOCKS = [
@@ -573,6 +574,33 @@ def stock_decision_api(code):
     decision["code"] = code
 
     return jsonify(decision)
+
+
+# ─── 预测回测 API ───
+
+@app.route('/api/predictions/stats')
+def predictions_stats_api():
+    """预测统计: 总体准确率 + 按信号类型 + 按个股"""
+    code = request.args.get('code', '')
+    if code:
+        return jsonify(get_stock_stats(code))
+    return jsonify(get_signal_stats())
+
+
+@app.route('/api/predictions/verify', methods=['POST'])
+def predictions_verify_api():
+    """手动触发验证"""
+    count = verify_predictions(fetch_kline)
+    stats = get_signal_stats()
+    stats["verified_count"] = count
+    return jsonify(stats)
+
+
+@app.route('/api/predictions/recent')
+def predictions_recent_api():
+    """近N天验证结果"""
+    days = request.args.get('days', 7, type=int)
+    return jsonify(get_recent_results(days))
 
 
 # ─── UZI 深度分析任务存储 ───
@@ -1532,8 +1560,19 @@ def _save_snapshot(name, data):
         json.dump(data, f, ensure_ascii=False)
 
 def _run_scheduled_scans():
-    """定时扫描：选股模式 + 板块追踪"""
-    print(f'[scheduler] 执行定时扫描...')
+    """定时扫描：选股模式 + 板块追踪 + 预测记录 + 收盘验证"""
+    from engine.decision import make_decision
+    from engine.prediction_tracker import record_prediction, verify_predictions, is_record_time
+
+    now = time.localtime()
+    is_record = is_record_time(now.tm_hour, now.tm_min)
+    is_verify = (now.tm_hour, now.tm_min) == (15, 10)
+
+    print(f'[scheduler] 执行定时扫描 (记录={is_record}, 验证={is_verify})...')
+
+    # 收集所有扫描到的股票
+    all_scanned = []
+
     try:
         # 1. 选股模式扫描
         wl = load_watchlist()
@@ -1549,6 +1588,8 @@ def _run_scheduled_scans():
                 if len(k) >= 60:
                     klines_all[f'{market}{code}'] = k
                     code_info[f'{market}{code}'] = {'code':code,'market':market,'name':name}
+                    if is_record:
+                        all_scanned.append({'code':code,'market':market,'name':name,'kline':k})
             raw = scan_patterns(klines_all)
             patterns_out = []
             for full_code, matches in raw.items():
@@ -1575,8 +1616,51 @@ def _run_scheduled_scans():
             result['time'] = time.strftime('%H:%M')
             _save_snapshot('sectors.json', result)
             print(f'[scheduler] 板块追踪: {result["total_patterns"]} 个形态, {len(codes)} 板块')
+            if is_record:
+                for sec in result.get("sectors", []):
+                    for stk in sec.get("stocks", []):
+                        code = stk.get("code", "")
+                        market = stk.get("market", "sh")
+                        name = stk.get("name", code)
+                        # 去重: 已从自选股添加的不重复添加
+                        if not any(s['code']==code and s['market']==market for s in all_scanned):
+                            full_code = market + code
+                            try:
+                                k = fetch_kline(full_code, 120)
+                                if len(k) >= 20:
+                                    all_scanned.append({'code':code,'market':market,'name':name,'kline':k})
+                            except:
+                                pass
     except Exception as e:
         print(f'[scheduler] 板块扫描失败: {e}')
+
+    # 3. 记录预测（仅在3个关键时间点）
+    if is_record and all_scanned:
+        from engine.indicators import calc_support_resistance
+        recorded = 0
+        for s in all_scanned:
+            try:
+                closes = [k['close'] for k in s['kline']]
+                sr = calc_support_resistance(s['kline']) if len(s['kline']) >= 20 else {}
+                pats = scan_patterns({s['market']+s['code']: s['kline']}) if len(s['kline']) >= 20 else {}
+                patterns = pats.get(s['market']+s['code'], [])
+                decision = make_decision(closes, s['kline'], patterns, sr)
+                price = closes[-1] if closes else 0
+                record_prediction(s['code'], s['market'], s['name'],
+                                 decision['signal'], decision['score'], price)
+                recorded += 1
+            except:
+                pass
+        print(f'[scheduler] 预测记录: {recorded} 只股票')
+
+    # 4. 收盘验证 (15:10)
+    if is_verify:
+        try:
+            vcount = verify_predictions(fetch_kline)
+            print(f'[scheduler] 预测验证: {vcount} 条')
+        except Exception as e:
+            print(f'[scheduler] 验证失败: {e}')
+
     print(f'[scheduler] 扫描完成')
 
 def _scheduler_loop():
