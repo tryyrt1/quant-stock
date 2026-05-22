@@ -11,3 +11,5 @@ fix_*.py
 update_*.py
 insert_block.py
 stock_list.json
+# 本地部署脚本（含本地路径）
+deploy_cloud.bat

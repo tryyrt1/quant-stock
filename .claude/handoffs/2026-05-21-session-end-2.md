@@ -28,4 +28,4 @@
 - 中文，A 股市场
 - 直接执行不反复确认
 - GitHub: tryyrt1
-- 云服务器: YOUR_SERVER_IP
+- 云服务器信息见本地 `.ssh/config`

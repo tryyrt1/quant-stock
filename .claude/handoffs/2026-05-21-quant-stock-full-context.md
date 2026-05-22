@@ -79,17 +79,9 @@ quant-stock-pro/
 
 ## 云服务器
 
-- **IP:** YOUR_SERVER_IP
-- **用户:** ubuntu
-- **SSH 密钥:** `~/.ssh/YOUR_SSH_KEY`
 - **服务路径:** `/home/ubuntu/quant-stock/`
 - **服务名:** `quant-stock` (systemd)
-- **部署命令:**
-  ```bash
-  scp -i ~/.ssh/YOUR_SSH_KEY server.py ubuntu@YOUR_SERVER_IP:~/quant-stock/
-  scp -i ~/.ssh/YOUR_SSH_KEY -r engine/ ubuntu@YOUR_SERVER_IP:~/quant-stock/
-  ssh -i ~/.ssh/YOUR_SSH_KEY ubuntu@YOUR_SERVER_IP "sudo systemctl restart quant-stock"
-  ```
+- **部署命令:** 见本地 `deploy_cloud.bat` 或 `$CLOUD_HOST` 环境变量
 
 ## 做出的关键决策
 
@@ -121,7 +113,7 @@ quant-stock-pro/
 - 偏好直接执行不反复确认（"拿到目标后一口气做完"）
 - 项目在 `C:\Users\Administrator\Desktop\python test\quant-stock-pro\`
 - GitHub: tryyrt1
-- 云服务器: 腾讯云 YOUR_SERVER_IP
+- 云服务器: 腾讯云 (IP 见本地环境变量)
 
 ## 下一会话继续的入口
 

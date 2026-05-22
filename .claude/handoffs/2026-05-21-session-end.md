@@ -13,7 +13,7 @@
 1. **handoff 技能安装** — 从 robertguss/claude-code-toolkit fork 到 tryyrt1，安装到全局 `~/.claude/skills/handoff/` 和项目本地 `.claude/skills/handoff/`
 2. **项目完整状态文档** — 生成了 `2026-05-21-quant-stock-full-context.md` 包含完整的项目结构、API、部署信息
 3. **GitHub 备份流程** — `.claude/handoffs/` 纳入 git 管理，每次会话结束自动 commit + push 到 `tryyrt1/quant-stock`
-4. **验证项目运行** — 本地服务 8080 端口正常，云服务器 YOUR_SERVER_IP 正常，扫描/决策 API 均正常
+4. **验证项目运行** — 本地服务 8080 端口正常，云服务器运行正常，扫描/决策 API 均正常
 
 ## 决策
 
@@ -39,4 +39,4 @@
 - 直接执行不反复确认
 - 项目: `C:\Users\Administrator\Desktop\python test\quant-stock-pro\`
 - GitHub: tryyrt1
-- 云服务器: YOUR_SERVER_IP
+- 云服务器信息见本地 `.ssh/config`

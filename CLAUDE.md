@@ -28,9 +28,8 @@ cd ~/Desktop/python\ test/quant-stock-pro && python server.py
 
 ## 云服务器
 
-- IP: YOUR_SERVER_IP, 用户: ubuntu, 密钥: `~/.ssh/YOUR_SSH_KEY`
-- systemd 服务名: `quant-stock`
 - 部署: `scp` 文件后 `sudo systemctl restart quant-stock`
+- 连接信息见本地 `.ssh/config` 或环境变量 `$CLOUD_HOST`
 
 ## 日常操作
 
