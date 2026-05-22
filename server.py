@@ -38,7 +38,7 @@ from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
 from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, PREDEFINED
 from engine.decision import make_decision
-from engine.prediction_tracker import record_prediction, verify_predictions, get_signal_stats, get_stock_stats, get_recent_results, is_record_time
+from engine.prediction_tracker import record_prediction, verify_predictions, update_prediction_tracks, get_signal_stats, get_stock_stats, get_recent_results, is_record_time
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
 STATIC_STOCKS = [
@@ -1550,7 +1550,12 @@ import threading
 
 # ─── 定时扫描 ───
 SNAPSHOT_DIR = os.path.join(DATA_DIR, 'snapshots')
-SCHEDULE_TIMES = [(9,25),(9,45),(10,10),(11,0),(13,30),(14,30),(15,10)]
+# 15分钟间隔记录时间点: 09:25~11:25 上午, 13:10~15:10 下午
+RECORD_TIMES_15MIN = [
+    (9,25),(9,40),(9,55),(10,10),(10,25),(10,40),(10,55),(11,10),(11,25),
+    (13,10),(13,25),(13,40),(13,55),(14,10),(14,25),(14,40),(14,55),(15,10),
+]
+SCHEDULE_TIMES = RECORD_TIMES_15MIN
 _SCHEDULER_RUNNING = False
 
 def _save_snapshot(name, data):
@@ -1634,30 +1639,38 @@ def _run_scheduled_scans():
     except Exception as e:
         print(f'[scheduler] 板块扫描失败: {e}')
 
-    # 3. 记录预测（仅在3个关键时间点）
+    # 3. 记录预测（15分钟间隔时间点）
     if is_record and all_scanned:
         from engine.indicators import calc_support_resistance
+        # 批量获取实时行情
+        codes_str = ','.join(f'{s["market"]}{s["code"]}' for s in all_scanned)
+        quotes = fetch_tencent_quote(codes_str) if codes_str else {}
         recorded = 0
         for s in all_scanned:
             try:
+                code, market = s['code'], s['market']
+                quote = quotes.get(code, {})
+                price = quote.get('price', s['kline'][-1]['close'] if s['kline'] else 0)
+                if price <= 0:
+                    continue
                 closes = [k['close'] for k in s['kline']]
                 sr = calc_support_resistance(s['kline']) if len(s['kline']) >= 20 else {}
-                pats = scan_patterns({s['market']+s['code']: s['kline']}) if len(s['kline']) >= 20 else {}
-                patterns = pats.get(s['market']+s['code'], [])
-                decision = make_decision(closes, s['kline'], patterns, sr)
-                price = closes[-1] if closes else 0
-                record_prediction(s['code'], s['market'], s['name'],
+                pats = scan_patterns({market+code: s['kline']}) if len(s['kline']) >= 20 else {}
+                patterns = pats.get(market+code, [])
+                decision = make_decision(closes, s['kline'], patterns, sr, None, quote)
+                record_prediction(code, market, s['name'],
                                  decision['signal'], decision['score'], price)
                 recorded += 1
             except:
                 pass
         print(f'[scheduler] 预测记录: {recorded} 只股票')
 
-    # 4. 收盘验证 (15:10)
+    # 4. 收盘验证 + 多日追踪更新 (15:10)
     if is_verify:
         try:
             vcount = verify_predictions(fetch_kline)
-            print(f'[scheduler] 预测验证: {vcount} 条')
+            tcount = update_prediction_tracks(fetch_kline)
+            print(f'[scheduler] 预测验证: {vcount} 条, 追踪更新: {tcount} 条')
         except Exception as e:
             print(f'[scheduler] 验证失败: {e}')
 

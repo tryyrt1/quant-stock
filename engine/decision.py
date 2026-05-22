@@ -259,20 +259,139 @@ def assess_sector(sector_ctx=None):
     return max(0, min(100, score)), reasons
 
 
-def make_decision(closes, klines, patterns, sr, sector_ctx=None):
-    """综合决策 — 返回明确买卖信号"""
+def assess_intraday(quote, closes):
+    """分时评分 (0-100), 权重10%
+    quote: 实时行情 {price, open, high, low, volume, yesterdayClose}
+    closes: 日K线收盘价列表（用于判断趋势方向）
+    """
+    if not quote or not quote.get('price'):
+        return 50, ["暂无分时数据"]
+
+    price = quote['price']
+    yesterday_close = quote.get('yesterdayClose', 0)
+    today_open = quote.get('open', 0)
+    today_high = quote.get('high', 0)
+    today_low = quote.get('low', 0)
+
+    if yesterday_close <= 0:
+        return 50, ["分时数据不足"]
+
+    score = 50
+    reasons = []
+
+    # 1. 开盘走势 (0-30分) — 高开低走/低开高走
+    gap_pct = (today_open - yesterday_close) / yesterday_close * 100 if yesterday_close else 0
+    now_pct = (price - yesterday_close) / yesterday_close * 100
+    gap_diff = now_pct - gap_pct  # 正=开盘后走强, 负=开盘后走弱
+
+    if gap_pct > 1.5:
+        reasons.append(f"高开{gap_pct:.1f}%")
+        if gap_diff > -1:
+            # 高开且没回落太多
+            score += 20
+            reasons.append("开盘强势")
+        elif gap_diff < -2:
+            # 高开低走
+            score -= 15
+            reasons.append("高开低走,抛压大")
+        else:
+            score += 5
+    elif gap_pct < -1.5:
+        reasons.append(f"低开{gap_pct:.1f}%")
+        if gap_diff > 1:
+            # 低开高走
+            score += 20
+            reasons.append("低开高走,承接强")
+        elif gap_diff < -1:
+            score -= 10
+            reasons.append("低开低走,弱势")
+        else:
+            score -= 5
+    else:
+        reasons.append(f"平开({gap_pct:+.1f}%)")
+        if gap_diff > 2:
+            score += 10
+            reasons.append("盘中走强")
+        elif gap_diff < -2:
+            score -= 10
+            reasons.append("盘中走弱")
+
+    # 2. 日内相对位置 (0-30分)
+    if today_high > today_low and price > 0:
+        pos_pct = (price - today_low) / (today_high - today_low) * 100
+        # 判断趋势方向
+        trend_up = len(closes) >= 10 and (closes[-1] - closes[-10]) / closes[-10] * 100 > 3 if closes else False
+        if pos_pct < 20:
+            if trend_up:
+                score += 15  # 回调到低位但趋势向上 → 机会
+                reasons.append("日内低位(上升趋势中)")
+            else:
+                score += 8
+                reasons.append("日内低位")
+        elif pos_pct > 80:
+            if trend_up:
+                score += 5
+                reasons.append("日内高位(上升趋势中)")
+            else:
+                score -= 12  # 弱势股追高
+                reasons.append("日内高位,追高风险")
+        else:
+            reasons.append(f"日内中部({pos_pct:.0f}%分位)")
+
+    # 3. 当前涨跌幅 (0-20分)
+    if abs(now_pct) < 1:
+        score += 5
+        reasons.append(f"当前涨跌幅适中({now_pct:+.1f}%)")
+    elif now_pct > 3:
+        score += 10
+        reasons.append(f"强势上涨{now_pct:+.1f}%")
+    elif now_pct > 5:
+        score += 5
+        reasons.append(f"涨幅已大{now_pct:+.1f}%,追高谨慎")
+    elif now_pct < -3:
+        score -= 8
+        reasons.append(f"弱势下跌{now_pct:+.1f}%")
+    elif now_pct < -5:
+        score -= 5
+        reasons.append(f"大跌{now_pct:+.1f}%,恐慌杀跌")
+
+    # 4. 分时量比 (0-20分) — 结合日K线均量估算
+    vol = quote.get('volume', 0)
+    if vol and len(closes) >= 20:
+        avg_vol = sum(k['volume'] for k in closes[-20:]) / 20 if 'volume' in str(type(closes[0])) else 0
+        if avg_vol > 0:
+            vol_ratio = vol / avg_vol
+            if vol_ratio > 1.5 and now_pct > 1:
+                score += 10
+                reasons.append(f"放量上攻(量比{vol_ratio:.1f})")
+            elif vol_ratio > 1.5 and now_pct < -1:
+                score -= 10
+                reasons.append(f"放量下杀(量比{vol_ratio:.1f})")
+            elif vol_ratio < 0.4 and now_pct > 0:
+                score -= 5
+                reasons.append("缩量上涨,动能不足")
+
+    return max(0, min(100, score)), reasons
+
+
+def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None):
+    """综合决策 — 返回明确买卖信号
+    quote: 可选，传入实时行情数据用于分时评分
+    """
     trend_score, trend_reasons = assess_trend(closes)
     pat_score, pat_reasons = assess_patterns(patterns)
     level_score, level_reasons = assess_price_level(closes, sr)
     vol_score, vol_reasons = assess_volume(closes, klines)
     sector_score, sector_reasons = assess_sector(sector_ctx)
+    intraday_score, intraday_reasons = assess_intraday(quote, closes)
 
     weights = {
-        "trend": 0.30,
-        "patterns": 0.25,
-        "price_level": 0.20,
-        "volume": 0.10,
-        "sector": 0.15,
+        "trend": 0.28,
+        "patterns": 0.22,
+        "price_level": 0.18,
+        "volume": 0.08,
+        "sector": 0.14,
+        "intraday": 0.10,
     }
 
     total = (
@@ -281,6 +400,7 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None):
         + level_score * weights["price_level"]
         + vol_score * weights["volume"]
         + sector_score * weights["sector"]
+        + intraday_score * weights["intraday"]
     )
     total = round(max(0, min(100, total)), 1)
 
@@ -325,6 +445,7 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None):
             "price_level": {"score": level_score, "reasons": level_reasons, "weight": weights["price_level"]},
             "volume": {"score": vol_score, "reasons": vol_reasons, "weight": weights["volume"]},
             "sector": {"score": sector_score, "reasons": sector_reasons, "weight": weights["sector"]},
+            "intraday": {"score": intraday_score, "reasons": intraday_reasons, "weight": weights["intraday"]},
         },
-        "reasons": all_reasons[:10],
+        "reasons": all_reasons[:10] + intraday_reasons[:3],
     }

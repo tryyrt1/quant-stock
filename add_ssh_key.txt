@@ -1,4 +1,1 @@
-mkdir -p /root/.ssh
-echo ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPo21aqwoIg559mCQ5SbBBoJgqtr0hTWwoibq2jGJ6Rz auto-deploy >> /root/.ssh/authorized_keys
-chmod 700 /root/.ssh
-chmod 600 /root/.ssh/authorized_keys
+

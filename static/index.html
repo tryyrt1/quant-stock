@@ -250,7 +250,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div id="page-predictions" class="hide">
     <div class="card">
       <div class="card-title">📈 预测统计</div>
-      <div style="font-size:12px;color:#aaa;margin-bottom:10px">每天09:45/11:00/15:10三次记录信号，次日收盘验证准确率</div>
+      <div style="font-size:12px;color:#aaa;margin-bottom:10px">每天18个时间点(09:25~15:10, 15分钟间隔)记录信号，多日追踪验证，曲线图展示预测vs实际走势</div>
       <div id="predictionStats"><div class="loading" style="text-align:center;padding:20px"><span class="spinner"></span>加载中...</div></div>
     </div>
     <div id="predictionResults"></div>
@@ -942,6 +942,7 @@ function switchTab(tab) {
   document.getElementById('page-patterns').classList.toggle('hide',tab!=='patterns')
   document.getElementById('page-sectors').classList.toggle('hide',tab!=='sectors')
   document.getElementById('page-commodity').classList.toggle('hide',tab!=='commodity')
+  document.getElementById('page-predictions').classList.toggle('hide',tab!=='predictions')
 }
 function showHome() { switchTab('home') }
 function showDetail() { switchTab('detail') }
@@ -1089,6 +1090,9 @@ function renderPredictionStats(stats, recent) {
     html += '</div>'
   }
 
+  // 保存recent数据供图表点击使用
+  window.__recentPredictions = recent
+
   el.innerHTML = html
 
   if (!recent || recent.length === 0) {
@@ -1097,6 +1101,7 @@ function renderPredictionStats(stats, recent) {
   }
 
   let rh = ''
+  let chartIdx = 0
   recent.forEach(day => {
     rh += '<div class="card"><div class="card-title">' + day.date + '</div>'
     day.stocks.forEach(stk => {
@@ -1105,19 +1110,135 @@ function renderPredictionStats(stats, recent) {
         const icon = r.correct === true ? '✅' : r.correct === false ? '❌' : '➖'
         const cl = sigColors[r.signal] || '#888'
         const chg = r.next_change_pct != null ? (r.next_change_pct >= 0 ? '+' : '') + r.next_change_pct.toFixed(2) + '%' : '--'
+        const cid = 'pchart-' + chartIdx
         rh += '<div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:2px 4px;margin:2px 0;background:rgba(255,255,255,.03);border-radius:4px">' +
           '<span style="color:#888;min-width:36px">' + r.time + '</span>' +
           '<span style="color:' + cl + ';font-weight:600">' + r.signal + '</span>' +
           '<span style="color:#888">' + r.score + '分</span>' +
           '<span style="color:#888">@' + r.price + '</span>' +
           '<span style="flex:1;text-align:right;color:' + (r.correct === true ? '#2ed573' : '#ff4757') + '">' + chg + '</span>' +
-          '<span>' + icon + '</span></div>'
+          '<span>' + icon + '</span>' +
+          '<span style="cursor:pointer;font-size:10px;color:#00d2ff" onclick="toggleTrackChart(\'' + cid + '\',' + chartIdx + ')">📈</span></div>' +
+          '<div id="' + cid + '" style="display:none;padding:4px 0"></div>'
+        chartIdx++
       })
       rh += '</div>'
     })
     rh += '</div>'
   })
   resultsEl.innerHTML = rh
+}
+
+// ─── 预测曲线图 ───
+function toggleTrackChart(cid, idx) {
+  const el = document.getElementById(cid)
+  if (!el) return
+  if (el.style.display !== 'none') {
+    el.style.display = 'none'
+    return
+  }
+  // 从保存的recent数据中查找对应记录
+  const recent = window.__recentPredictions || []
+  let i = 0
+  let found = null
+  for (const day of recent) {
+    for (const stk of day.stocks) {
+      for (const r of stk.records) {
+        if (i === idx) { found = r; break }
+        i++
+      }
+      if (found) break
+    }
+    if (found) break
+  }
+  if (!found || !found.verify_track || found.verify_track.length < 2) {
+    el.innerHTML = '<div style="font-size:11px;color:#888;padding:4px">暂无追踪数据</div>'
+    el.style.display = 'block'
+    return
+  }
+  el.innerHTML = renderTrackChart(found.verify_track, found.signal, found.score)
+  el.style.display = 'block'
+}
+
+function renderTrackChart(track, signal, score) {
+  // track: [{date, close}, ...], signal: 买入/增持/持有/减仓/卖出
+  if (!track || track.length < 2) return ''
+  const prices = track.map(t => t.close)
+  const dates = track.map(t => t.date.slice(5)) // MM-DD
+  const basePrice = prices[0]
+  const mn = Math.min(...prices)
+  const mx = Math.max(...prices)
+  const range = (mx - mn) || 1
+  const pad = range * 0.15
+  const yMin = mn - pad
+  const yMax = mx + pad
+  const yRange = yMax - yMin || 1
+
+  const W = 280, H = 120
+  const toX = (i) => i * (W - 30) / (prices.length - 1) + 15
+  const toY = (p) => H - 15 - ((p - yMin) / yRange * (H - 30))
+
+  // Actual price line
+  const actParts = prices.map((p, i) => `${toX(i).toFixed(1)},${toY(p).toFixed(1)}`)
+  const actPath = actParts.join(' ')
+
+  // Predicted projection: from basePrice, slope by signal
+  const signalSlopes = {'买入':0.005, '增持':0.003, '持有':0, '减仓':-0.003, '卖出':-0.005}
+  const slope = signalSlopes[signal] || 0
+  const predPrices = prices.map((_, i) => basePrice * (1 + slope * i))
+  const predParts = predPrices.map((p, i) => `${toX(i).toFixed(1)},${toY(p).toFixed(1)}`)
+  const predPath = predParts.join(' ')
+
+  // Y-axis labels
+  const yLabels = []
+  for (let i = 0; i <= 4; i++) {
+    const v = yMin + yRange * i / 4
+    yLabels.push({v, y: toY(v)})
+  }
+
+  // Determine final outcome
+  const lastActual = prices[prices.length - 1]
+  const lastPredicted = predPrices[predPrices.length - 1]
+  const finalCorrect = signal === '买入' || signal === '增持' ? lastActual >= lastPredicted :
+                       signal === '卖出' || signal === '减仓' ? lastActual <= lastPredicted : null
+  const finalChg = ((lastActual - basePrice) / basePrice * 100).toFixed(1)
+
+  const sigColors = {'买入':'#ff4757','增持':'#ff6b81','持有':'#00d2ff','减仓':'#ffa502','卖出':'#2ed573'}
+  const sc = sigColors[signal] || '#888'
+
+  return `<div style="margin:4px 0">
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:2px">
+      <span style="color:${sc}">${signal} ${score}分</span>
+      <span>基准 ${basePrice.toFixed(2)}</span>
+      <span style="color:${finalCorrect === true ? '#2ed573' : finalCorrect === false ? '#ff4757' : '#888'}">
+        ${finalChg}% ${finalCorrect === true ? '✅' : finalCorrect === false ? '❌' : '➖'}
+      </span>
+    </div>
+    <svg width="${W}" height="${H}" style="background:rgba(0,0,0,.2);border-radius:4px">
+      <!-- Grid lines -->
+      ${yLabels.map((l, i) =>
+        `<line x1="15" y1="${Math.round(l.y)}" x2="${W-15}" y2="${Math.round(l.y)}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>
+         <text x="12" y="${Math.round(l.y)+3}" fill="#666" font-size="9" text-anchor="end">${l.v.toFixed(1)}</text>`
+      ).join('')}
+      <!-- X-axis dates -->
+      <text x="${W/2}" y="${H-2}" fill="#666" font-size="8" text-anchor="middle">${dates[0]} → ${dates[dates.length-1]}</text>
+      <!-- Predicted (dashed) -->
+      <polyline points="${predPath}" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <!-- Actual (solid) -->
+      <polyline points="${actPath}" fill="none" stroke="#4fc3f7" stroke-width="2"/>
+      <!-- Start/End dots -->
+      <circle cx="${toX(0).toFixed(1)}" cy="${toY(prices[0]).toFixed(1)}" r="2.5" fill="#4fc3f7"/>
+      <circle cx="${toX(prices.length-1).toFixed(1)}" cy="${toY(prices[prices.length-1]).toFixed(1)}" r="2.5" fill="${finalCorrect === true ? '#2ed573' : finalCorrect === false ? '#ff4757' : '#888'}"/>
+      <!-- Predicted end dot -->
+      <circle cx="${toX(prices.length-1).toFixed(1)}" cy="${toY(predPrices[predPrices.length-1]).toFixed(1)}" r="2" fill="rgba(255,255,255,.35)"/>
+      <!-- Legend -->
+      <rect x="${W-65}" y="4" width="61" height="20" rx="3" fill="rgba(0,0,0,.4)"/>
+      <line x1="${W-60}" y1="11" x2="${W-48}" y2="11" stroke="#4fc3f7" stroke-width="2"/>
+      <text x="${W-46}" y="14" fill="#4fc3f7" font-size="8">实价</text>
+      <line x1="${W-30}" y1="11" x2="${W-18}" y2="11" stroke="rgba(255,255,255,.35)" stroke-width="1.5" stroke-dasharray="2,2"/>
+      <text x="${W-16}" y="14" fill="rgba(255,255,255,.5)" font-size="8">预测</text>
+    </svg>
+  </div>`
 }
 
 function renderMinesweeper(data) {
