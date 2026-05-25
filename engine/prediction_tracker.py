@@ -9,6 +9,25 @@ RECORD_TIMES = [
     "13:10","13:25","13:40","13:55","14:10","14:25","14:40","14:55","15:10",
 ]
 
+# 2026年A股休市日期（非周末的节假日）
+TRADING_HOLIDAYS = {
+    "2026-01-01", "2026-01-02",
+    "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20",
+    "2026-04-06",
+    "2026-05-01", "2026-05-04", "2026-05-05",
+    "2026-06-25", "2026-06-26",
+    "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07",
+}
+
+
+def is_trading_day(t=None):
+    """判断是否为交易日（非周末、非节假日）"""
+    if t is None:
+        t = time.localtime()
+    if t.tm_wday >= 5:
+        return False
+    return time.strftime("%Y-%m-%d", t) not in TRADING_HOLIDAYS
+
 
 def _load():
     os.makedirs(PREDICTIONS_DIR, exist_ok=True)
@@ -38,6 +57,7 @@ def is_record_time(hour, minute):
 
 def record_prediction(code, market, name, signal, score, price, record_time=None):
     """记录一条预测（同一股票+同日+同时段去重）
+    自动检测信号变化（与前一个时间点对比），存入 signal_change 字段
     record_time: 可选，指定记录时间，不指定则用当前时间
     """
     today = time.strftime("%Y-%m-%d")
@@ -47,6 +67,29 @@ def record_prediction(code, market, name, signal, score, price, record_time=None
         return
 
     data = _load()
+
+    # 信号强度映射（用于量化比较）
+    SIGNAL_RANK = {"买入": 5, "增持": 4, "持有": 3, "减仓": 2, "卖出": 1}
+
+    # 查找同一股票今天上一个时间点的记录
+    prev_signal = None
+    prev_score = None
+    for r in reversed(data):
+        if r.get("date") == today and r.get("code") == code:
+            prev_signal = r.get("signal")
+            prev_score = r.get("score")
+            break
+
+    # 检测信号变化
+    signal_change = None
+    cur_rank = SIGNAL_RANK.get(signal, 0)
+    prev_rank = SIGNAL_RANK.get(prev_signal, 0) if prev_signal else 0
+    if prev_signal and prev_signal != signal:
+        if cur_rank > prev_rank:
+            signal_change = f"信号转强:{prev_signal}→{signal}({prev_score}→{score})"
+        elif cur_rank < prev_rank:
+            signal_change = f"信号转弱:{prev_signal}→{signal}({prev_score}→{score})"
+
     for i, r in enumerate(data):
         if r.get("date") == today and r.get("code") == code and r.get("time") == now_time:
             data[i] = {
@@ -55,15 +98,20 @@ def record_prediction(code, market, name, signal, score, price, record_time=None
                 "signal": signal, "score": score, "price": price,
                 "verified": False,
             }
+            if signal_change:
+                data[i]["signal_change"] = signal_change
             _save(data)
             return
 
-    data.append({
+    new_record = {
         "date": today, "time": now_time,
         "code": code, "market": market, "name": name,
         "signal": signal, "score": score, "price": price,
         "verified": False,
-    })
+    }
+    if signal_change:
+        new_record["signal_change"] = signal_change
+    data.append(new_record)
     _save(data)
 
 
@@ -274,6 +322,17 @@ def get_recent_results(days=7):
 
     dates = sorted(set(r["date"] for r in visible), reverse=True)[:days]
 
+    # 计算各股票的历史准确率
+    stock_stats = {}
+    for r in data:
+        code = r.get("code")
+        if code not in stock_stats:
+            stock_stats[code] = {"correct": 0, "total": 0}
+        if r.get("verified") and r.get("correct") is not None:
+            stock_stats[code]["total"] += 1
+            if r["correct"]:
+                stock_stats[code]["correct"] += 1
+
     result = []
     for date in dates:
         day_records = [r for r in visible if r["date"] == date]
@@ -281,7 +340,12 @@ def get_recent_results(days=7):
         for r in day_records:
             code = r["code"]
             if code not in stocks:
-                stocks[code] = {"code": code, "name": r.get("name", code), "records": []}
+                ss = stock_stats.get(code, {})
+                acc = round(ss.get("correct", 0) / ss.get("total", 1) * 100, 1) if ss.get("total", 0) > 0 else 0
+                stocks[code] = {
+                    "code": code, "name": r.get("name", code), "records": [],
+                    "accuracy": acc, "accuracy_total": ss.get("total", 0),
+                }
             stocks[code]["records"].append({
                 "time": r.get("time", ""),
                 "signal": r.get("signal", ""),
@@ -290,6 +354,7 @@ def get_recent_results(days=7):
                 "next_change_pct": r.get("next_change_pct"),
                 "correct": r.get("correct"),
                 "verify_track": r.get("verify_track", []),
+                "signal_change": r.get("signal_change"),
             })
         for s in stocks.values():
             s["records"].sort(key=lambda x: x.get("time", ""))
@@ -300,3 +365,78 @@ def get_recent_results(days=7):
         })
 
     return result
+
+
+def get_signal_performance():
+    """按信号类型统计各持有期的平均收益率和胜率
+    从 verify_track 中提取 +1, +3, +5, +10 天的涨跌幅
+    """
+    data = _load()
+    verified = [r for r in data if r.get("verify_track") and len(r["verify_track"]) >= 2]
+
+    # offsets 天数偏移
+    offsets = [1, 3, 5, 10]
+
+    stats = {}  # {signal: {offsets: {return: [], correct: []}, total: N}}
+    for r in verified:
+        sig = r.get("signal", "未知")
+        if sig not in stats:
+            stats[sig] = {"total": 0, "offsets": {o: {"returns": [], "correct": 0, "count": 0} for o in offsets}}
+        stats[sig]["total"] += 1
+
+        track = r["verify_track"]
+        pred_price = track[0]["close"]
+        if pred_price <= 0:
+            continue
+
+        for o in offsets:
+            if len(track) > o:
+                cur_close = track[o]["close"]
+                ret = (cur_close - pred_price) / pred_price * 100
+                stats[sig]["offsets"][o]["returns"].append(ret)
+                stats[sig]["offsets"][o]["count"] += 1
+                # 判断对错（与预测信号方向一致）
+                if sig in ("买入", "增持"):
+                    if ret > 0:
+                        stats[sig]["offsets"][o]["correct"] += 1
+                elif sig in ("卖出", "减仓"):
+                    if ret < 0:
+                        stats[sig]["offsets"][o]["correct"] += 1
+
+    result = {}
+    for sig, sdata in stats.items():
+        sig_result = {"total": sdata["total"], "offsets": {}}
+        for o, odata in sdata["offsets"].items():
+            if odata["count"] == 0:
+                continue
+            avg_ret = sum(odata["returns"]) / odata["count"]
+            win_rate = odata["correct"] / odata["count"] * 100 if odata["count"] > 0 else 0
+            sig_result["offsets"][o] = {
+                "count": odata["count"],
+                "avg_return": round(avg_ret, 2),
+                "win_rate": round(win_rate, 1),
+            }
+        result[sig] = sig_result
+
+    # 今日信号变化汇总
+    today = time.strftime("%Y-%m-%d")
+    today_records = [r for r in data if r.get("date") == today]
+    signal_changes = []
+    for r in today_records:
+        sc = r.get("signal_change", "")
+        if sc:
+            signal_changes.append({
+                "code": r.get("code", ""),
+                "name": r.get("name", ""),
+                "time": r.get("time", ""),
+                "signal": r.get("signal", ""),
+                "score": r.get("score", 0),
+                "change": sc,
+                "price": r.get("price", 0),
+            })
+
+    return {
+        "by_signal": result,
+        "today_changes": signal_changes,
+        "total_verified": sum(1 for r in verified if r.get("verified")),
+    }

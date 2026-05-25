@@ -259,11 +259,14 @@ def assess_sector(sector_ctx=None):
     return max(0, min(100, score)), reasons
 
 
-def assess_intraday(quote, closes):
+def assess_intraday(quote, closes, klines=None, hour=None, minute=None):
     """分时评分 (0-100), 权重10%
     quote: 实时行情 {price, open, high, low, volume, yesterdayClose}
     closes: 日K线收盘价列表（用于判断趋势方向）
+    klines: 完整日K线（用于获取均量数据），可选
+    hour, minute: 当前时间（用于时间加权指标），可选，默认用time.localtime()
     """
+    import time as _time
     if not quote or not quote.get('price'):
         return 50, ["暂无分时数据"]
 
@@ -276,100 +279,143 @@ def assess_intraday(quote, closes):
     if yesterday_close <= 0:
         return 50, ["分时数据不足"]
 
+    # 计算开盘以来经过的交易时间（小时）
+    if hour is None or minute is None:
+        now = _time.localtime()
+        hour, minute = now.tm_hour, now.tm_min
+    # 上午09:30~11:30=2h, 下午13:00~15:00=2h, 共4小时
+    if hour < 12:
+        elapsed = max(0, (hour - 9) + (minute - 30) / 60) if hour >= 9 else 0
+    else:
+        elapsed = 2 + max(0, (hour - 13) + minute / 60)  # 下午最多2小时
+    elapsed = min(elapsed, 4)  # 不超过4小时
+
     score = 50
     reasons = []
 
-    # 1. 开盘走势 (0-30分) — 高开低走/低开高走
     gap_pct = (today_open - yesterday_close) / yesterday_close * 100 if yesterday_close else 0
     now_pct = (price - yesterday_close) / yesterday_close * 100
     gap_diff = now_pct - gap_pct  # 正=开盘后走强, 负=开盘后走弱
 
+    # ── 1. 开盘走势 + 盘中方向 (0-25分) ──
     if gap_pct > 1.5:
         reasons.append(f"高开{gap_pct:.1f}%")
         if gap_diff > -1:
-            # 高开且没回落太多
-            score += 20
-            reasons.append("开盘强势")
+            score += 16; reasons.append("开盘强势")
         elif gap_diff < -2:
-            # 高开低走
-            score -= 15
-            reasons.append("高开低走,抛压大")
+            score -= 12; reasons.append("高开低走,抛压大")
         else:
             score += 5
     elif gap_pct < -1.5:
         reasons.append(f"低开{gap_pct:.1f}%")
         if gap_diff > 1:
-            # 低开高走
-            score += 20
-            reasons.append("低开高走,承接强")
+            score += 16; reasons.append("低开高走,承接强")
         elif gap_diff < -1:
-            score -= 10
-            reasons.append("低开低走,弱势")
+            score -= 10; reasons.append("低开低走,弱势")
         else:
             score -= 5
     else:
         reasons.append(f"平开({gap_pct:+.1f}%)")
         if gap_diff > 2:
-            score += 10
-            reasons.append("盘中走强")
+            score += 10; reasons.append("盘中走强")
         elif gap_diff < -2:
-            score -= 10
-            reasons.append("盘中走弱")
+            score -= 10; reasons.append("盘中走弱")
 
-    # 2. 日内相对位置 (0-30分)
+    # ── 2. 日内动量 + 位置 (0-25分) ──
+    # 2a. 从开盘到现在的涨跌幅（衡量日内方向强度）
+    intraday_chg = (price - today_open) / today_open * 100 if today_open else 0
+    if elapsed > 0.5:  # 至少交易30分钟才有意义
+        # 每小时涨跌幅（消除时间差异）
+        hourly_rate = intraday_chg / elapsed
+        if hourly_rate > 1.5:
+            score += 12; reasons.append(f"日内强势(时涨{hourly_rate:.1f}%)")
+        elif hourly_rate > 0.5:
+            score += 8; reasons.append(f"日内偏强(时涨{hourly_rate:.1f}%)")
+        elif hourly_rate < -1.5:
+            score -= 10; reasons.append(f"日内弱势(时跌{hourly_rate:.1f}%)")
+        elif hourly_rate < -0.5:
+            score -= 5; reasons.append(f"日内偏弱(时跌{hourly_rate:.1f}%)")
+        else:
+            reasons.append(f"日内震荡(时变{hourly_rate:+.1f}%)")
+    else:
+        # 开盘不久，直接用开盘走势
+        pass
+
+    # 2b. 日内相对位置（叠加）
     if today_high > today_low and price > 0:
         pos_pct = (price - today_low) / (today_high - today_low) * 100
-        # 判断趋势方向
         trend_up = len(closes) >= 10 and (closes[-1] - closes[-10]) / closes[-10] * 100 > 3 if closes else False
-        if pos_pct < 20:
+        if pos_pct < 15:
             if trend_up:
-                score += 15  # 回调到低位但趋势向上 → 机会
-                reasons.append("日内低位(上升趋势中)")
+                score += 13; reasons.append("回调至低位(上升趋势)")
             else:
-                score += 8
-                reasons.append("日内低位")
-        elif pos_pct > 80:
+                score += 5; reasons.append("日内低位")
+        elif pos_pct > 85:
             if trend_up:
-                score += 5
-                reasons.append("日内高位(上升趋势中)")
+                score += 5; reasons.append("主动追高(上升趋势)")
             else:
-                score -= 12  # 弱势股追高
-                reasons.append("日内高位,追高风险")
+                score -= 10; reasons.append("高位追涨(弱势)")
         else:
-            reasons.append(f"日内中部({pos_pct:.0f}%分位)")
+            reasons.append(f"日内中部")
 
-    # 3. 当前涨跌幅 (0-20分)
+    # ── 3. 当前涨跌幅 + 加速度 (0-15分) ──
+    # 3a. 当前涨幅
     if abs(now_pct) < 1:
-        score += 5
-        reasons.append(f"当前涨跌幅适中({now_pct:+.1f}%)")
-    elif now_pct > 3:
-        score += 10
-        reasons.append(f"强势上涨{now_pct:+.1f}%")
+        score += 5; reasons.append(f"涨跌幅适中({now_pct:+.1f}%)")
+    elif now_pct > 3 and now_pct <= 5:
+        score += 8; reasons.append(f"上涨{now_pct:+.1f}%")
     elif now_pct > 5:
-        score += 5
-        reasons.append(f"涨幅已大{now_pct:+.1f}%,追高谨慎")
-    elif now_pct < -3:
-        score -= 8
-        reasons.append(f"弱势下跌{now_pct:+.1f}%")
+        score += 3; reasons.append(f"涨幅已大{now_pct:+.1f}%")
+    elif now_pct >= -3 and now_pct < 0:
+        score -= 3; reasons.append(f"微跌{now_pct:+.1f}%")
+    elif now_pct < -3 and now_pct >= -5:
+        score -= 8; reasons.append(f"下跌{now_pct:+.1f}%")
     elif now_pct < -5:
-        score -= 5
-        reasons.append(f"大跌{now_pct:+.1f}%,恐慌杀跌")
+        score -= 5; reasons.append(f"大跌{now_pct:+.1f}%")
 
-    # 4. 分时量比 (0-20分) — 结合日K线均量估算
+    # 3b. 开盘后走势加速度（盘中方向一致性）
+    if elapsed > 1 and abs(intraday_chg) > 0.5:
+        consistency = abs(gap_diff) > abs(intraday_chg) * 0.3 if abs(intraday_chg) > 0 else True
+        if gap_diff > 1 and consistency:
+            score += 5; reasons.append("持续走强")
+        elif gap_diff < -1 and consistency:
+            score -= 5; reasons.append("持续走弱")
+
+    # ── 4. 量比 + 时间加权量 (0-20分) ──
     vol = quote.get('volume', 0)
-    if vol and len(closes) >= 20:
-        avg_vol = sum(k['volume'] for k in closes[-20:]) / 20 if 'volume' in str(type(closes[0])) else 0
-        if avg_vol > 0:
-            vol_ratio = vol / avg_vol
-            if vol_ratio > 1.5 and now_pct > 1:
-                score += 10
-                reasons.append(f"放量上攻(量比{vol_ratio:.1f})")
-            elif vol_ratio > 1.5 and now_pct < -1:
-                score -= 10
-                reasons.append(f"放量下杀(量比{vol_ratio:.1f})")
-            elif vol_ratio < 0.4 and now_pct > 0:
-                score -= 5
-                reasons.append("缩量上涨,动能不足")
+    # 从klines计算均量（修正之前的bug）
+    avg_vol = 0
+    if klines and len(klines) >= 20:
+        avg_vol = sum(k['volume'] for k in klines[-20:]) / 20
+    elif len(closes) >= 20:
+        # fallback: 如果没有klines，跳过精确的量比
+        pass
+
+    if avg_vol > 0 and elapsed > 0:
+        # 时间加权预期成交量 = 日均量 * 已过时间/4小时
+        expected_vol = avg_vol * (elapsed / 4)
+        vol_ratio = vol / expected_vol if expected_vol > 0 else 0
+
+        if vol_ratio > 1.5 and now_pct > 1:
+            score += 12; reasons.append(f"放量上攻(量比{vol_ratio:.1f})")
+        elif vol_ratio > 1.5 and now_pct < -1:
+            score -= 12; reasons.append(f"放量下杀(量比{vol_ratio:.1f})")
+        elif vol_ratio < 0.4 and now_pct > 0:
+            score -= 8; reasons.append("缩量上涨,动能不足")
+        elif vol_ratio < 0.4 and now_pct < -0.5:
+            score += 5; reasons.append("缩量下跌,抛压减轻")
+        elif vol_ratio < 0.3:
+            score -= 3; reasons.append("量能极度萎缩")
+
+        # 量价背离检测
+        if vol_ratio > 1.2 and abs(now_pct) < 0.3:
+            score -= 5; reasons.append("放量滞涨,资金分歧")
+        elif vol_ratio > 1.2 and abs(intraday_chg) < 0.5:
+            score -= 3; reasons.append("放量横盘,方向不明")
+    elif avg_vol == 0:
+        # 没有均量数据，用简单的当前量比
+        if vol > 0:
+            reasons.append(f"当日量{vol}")
 
     return max(0, min(100, score)), reasons
 
@@ -383,7 +429,7 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None):
     level_score, level_reasons = assess_price_level(closes, sr)
     vol_score, vol_reasons = assess_volume(closes, klines)
     sector_score, sector_reasons = assess_sector(sector_ctx)
-    intraday_score, intraday_reasons = assess_intraday(quote, closes)
+    intraday_score, intraday_reasons = assess_intraday(quote, closes, klines)
 
     weights = {
         "trend": 0.28,

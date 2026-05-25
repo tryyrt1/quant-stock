@@ -36,9 +36,9 @@ from engine.indicators import *
 from engine.factors import analyze_factors
 from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
-from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, PREDEFINED
+from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, fetch_hot_boards, PREDEFINED
 from engine.decision import make_decision
-from engine.prediction_tracker import record_prediction, verify_predictions, update_prediction_tracks, get_signal_stats, get_stock_stats, get_recent_results, is_record_time
+from engine.prediction_tracker import record_prediction, verify_predictions, update_prediction_tracks, get_signal_stats, get_stock_stats, get_recent_results, is_record_time, is_trading_day, get_signal_performance
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
 STATIC_STOCKS = [
@@ -52,10 +52,9 @@ STATIC_STOCKS = [
     ("600438","sh","通威股份"),("600031","sh","三一重工"),("600150","sh","中国船舶"),
     ("600048","sh","保利发展"),("600383","sh","金地集团"),("601688","sh","华泰证券"),
     ("601398","sh","工商银行"),("601939","sh","建设银行"),("601288","sh","农业银行"),
-    ("601328","sh","交通银行"),("600016","sh","民生银行"),("601166","sh","兴业银行"),
+    ("601328","sh","交通银行"),("600016","sh","民生银行"),
     ("600196","sh","复星医药"),("600085","sh","同仁堂"),("600600","sh","青岛啤酒"),
     ("600660","sh","福耀玻璃"),("600009","sh","上海机场"),("600886","sh","国投电力"),
-    ("601006","sh","大秦铁路"),("601857","sh","中国石油"),("600028","sh","中国石化"),
     ("000001","sz","平安银行"),("000002","sz","万科A"),("000333","sz","美的集团"),
     ("000651","sz","格力电器"),("000858","sz","五粮液"),("000568","sz","泸州老窖"),
     ("000538","sz","云南白药"),("000625","sz","长安汽车"),("000725","sz","京东方A"),
@@ -64,7 +63,7 @@ STATIC_STOCKS = [
     ("000408","sz","藏格矿业"),("000932","sz","华菱钢铁"),("000157","sz","中联重科"),
     ("000400","sz","许继电气"),("000425","sz","徐工机械"),("000661","sz","长春高新"),
     ("000792","sz","盐湖股份"),("000800","sz","一汽解放"),("000830","sz","鲁西化工"),
-    ("000858","sz","五粮液"),("000876","sz","新希望"),("000938","sz","紫光股份"),
+    ("000876","sz","新希望"),("000938","sz","紫光股份"),
     ("000963","sz","华东医药"),("000975","sz","银泰黄金"),("000977","sz","浪潮信息"),
     ("000983","sz","山西焦煤"),("000988","sz","华工科技"),("000999","sz","华润三九"),
     ("002001","sz","新和成"),("002007","sz","华兰生物"),("002008","sz","大族激光"),
@@ -90,9 +89,9 @@ STATIC_STOCKS = [
     ("002959","sz","小熊电器"),("002965","sz","祥鑫科技"),("003816","sz","中国广核"),
     ("601012","sh","隆基绿能"),("601238","sh","广汽集团"),("601633","sh","长城汽车"),
     ("601689","sh","拓普集团"),("601877","sh","正泰电器"),("601888","sh","中国中免"),
-    ("601899","sh","紫金矿业"),("601919","sh","中远海控"),("601658","sh","邮储银行"),
+    ("601919","sh","中远海控"),("601658","sh","邮储银行"),
     ("601995","sh","中金公司"),("601236","sh","红塔证券"),("601066","sh","中信建投"),
-    ("601878","sh","浙商证券"),("601336","sh","新华保险"),("601318","sh","中国平安"),
+    ("601878","sh","浙商证券"),("601336","sh","新华保险"),
     ("601600","sh","中国铝业"),("601618","sh","中国中冶"),("601669","sh","中国电建"),
     ("601800","sh","中国交建"),("601868","sh","中国能建"),("601390","sh","中国中铁"),
     ("601186","sh","中国铁建"),("601611","sh","中国核建"),("601766","sh","中国中车"),
@@ -603,6 +602,141 @@ def predictions_recent_api():
     return jsonify(get_recent_results(days))
 
 
+@app.route('/api/predictions/performance')
+def predictions_performance_api():
+    """信号历史表现：各信号类型在不同持有期的平均收益率和胜率"""
+    return jsonify(get_signal_performance())
+
+
+# ─── 主力成本分析 ───
+
+def estimate_capital_cost(code, market, klines=None):
+    """估算主力资金成本价
+    方法1: 量价分布 — 找出60日内放量日的 VWAP
+    方法2: 大宗交易 — 通过 akshare 获取
+    返回: {method1: {}, method2: {}, composite: {}}
+    """
+    if klines is None:
+        klines = fetch_kline(market + code, 60)
+
+    result = {"method1": {}, "method2": {}, "composite": {}}
+
+    # ── 方法1: 量价分布 ──
+    if klines and len(klines) >= 20:
+        closes = [k["close"] for k in klines]
+        vols = [k["volume"] for k in klines]
+        avg_vol = sum(vols) / len(vols)
+        threshold = avg_vol * 1.5
+
+        # 找出放量日
+        heavy_days = []
+        for k in klines:
+            if k["volume"] > threshold:
+                heavy_days.append(k)
+
+        if heavy_days:
+            # 计算放量日的 VWAP
+            total_vol = sum(k["volume"] for k in heavy_days)
+            total_vwp = sum(k["close"] * k["volume"] for k in heavy_days)
+            vwap = total_vwp / total_vol if total_vol > 0 else 0
+
+            # 找出最密集的价格区间
+            prices = sorted(set(k["close"] for k in heavy_days))
+            min_p = min(prices)
+            max_p = max(prices)
+
+            # 加权成本集中区
+            current_price = closes[-1]
+            pct_above = (current_price - vwap) / vwap * 100 if vwap else 0
+
+            result["method1"] = {
+                "vwap": round(vwap, 2),
+                "price_low": round(min_p, 2),
+                "price_high": round(max_p, 2),
+                "heavy_days": len(heavy_days),
+                "total_days": len(klines),
+                "avg_vol": int(avg_vol),
+                "current_price": round(current_price, 2),
+                "pct_above_cost": round(pct_above, 2),
+                "signal": "主力成本区下方" if pct_above < -3 else "主力成本区附近" if abs(pct_above) < 3 else "主力成本区上方",
+            }
+
+    # ── 方法2: 大宗交易 ──
+    try:
+        if AKSHARE_AVAILABLE:
+            import akshare as ak
+            from datetime import datetime, timedelta
+            today_str = datetime.now().strftime("%Y%m%d")
+            start_str = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
+            df = ak.stock_dzjy_mrmx(symbol="A股", start_date=start_str, end_date=today_str)
+            if df is not None and not df.empty:
+                stock_trades = df
+                if "证券代码" in df.columns:
+                    stock_trades = df[df["证券代码"].astype(str).str.contains(code)]
+                if not stock_trades.empty:
+                    trades = []
+                    for _, row in stock_trades.iterrows():
+                        try:
+                            trades.append({
+                                "date": str(row.get("交易日期", "")),
+                                "price": float(row.get("成交价", 0) or 0),
+                                "volume": int(row.get("成交量", 0) or 0),
+                                "amount": float(row.get("成交额", 0) or 0),
+                                "premium": float(row.get("折溢率", 0) or 0),
+                            })
+                        except:
+                            pass
+                    if trades:
+                        avg_price = sum(t["price"] for t in trades) / len(trades)
+                        total_amt = sum(t.get("amount", 0) or 0 for t in trades)
+                        result["method2"] = {
+                            "trades": trades[-10:],
+                            "total_trades": len(trades),
+                            "avg_price": round(avg_price, 2),
+                            "total_amount": round(total_amt, 2),
+                        }
+    except Exception as e:
+        result["method2"] = {"error": str(e), "trades": []}
+
+    # ── 综合判断 ──
+    prices_info = []
+    if result["method1"].get("vwap"):
+        prices_info.append(("量价成本", result["method1"]["vwap"]))
+    if result["method2"].get("avg_price"):
+        prices_info.append(("大宗交易", result["method2"]["avg_price"]))
+
+    if prices_info:
+        avg_cost = sum(p[1] for p in prices_info) / len(prices_info)
+        cur = klines[-1]["close"] if klines else 0
+        composite_pct = (cur - avg_cost) / avg_cost * 100 if avg_cost else 0
+        result["composite"] = {
+            "avg_cost": round(avg_cost, 2),
+            "current_price": round(cur, 2),
+            "pct_above_cost": round(composite_pct, 2),
+            "judgment": "主力大概率盈利" if composite_pct > 5 else "主力成本附近" if abs(composite_pct) < 5 else "主力可能被套",
+            "sources": [p[0] for p in prices_info],
+        }
+
+    return result
+
+
+@app.route('/api/stock/<code>/capital')
+def stock_capital_api(code):
+    """主力资金成本分析：量价分布 + 大宗交易"""
+    market = request.args.get('market', 'sh')
+    full_code = market + code
+    kline = fetch_kline(full_code, 60)
+    result = estimate_capital_cost(code, market, kline)
+    result["code"] = code
+    result["name"] = ""
+    # 取最新行情获取名称
+    quotes = fetch_tencent_quote(full_code)
+    q = quotes.get(code, {})
+    if q:
+        result["name"] = q.get("name", "")
+    return jsonify(result)
+
+
 # ─── UZI 深度分析任务存储 ───
 uzi_tasks = {}
 uzi_tasks_lock = threading.Lock()
@@ -1061,6 +1195,15 @@ def sectors_scan_api():
     if not sector_codes:
         return jsonify({"error": "未提供板块代码"}), 400
     result = scan_sector_stocks(sector_codes, fetch_kline, max_stocks=max_stocks)
+    return jsonify(result)
+
+
+@app.route('/api/sectors/hot', methods=['POST'])
+def sectors_hot_api():
+    """全市场异动板块 Top N"""
+    data = request.json or {}
+    top_n = data.get("top_n", 8)
+    result = fetch_hot_boards(fetch_kline, top_n=top_n)
     return jsonify(result)
 
 
@@ -1566,10 +1709,12 @@ def _save_snapshot(name, data):
 
 def _run_scheduled_scans():
     """定时扫描：选股模式 + 板块追踪 + 预测记录 + 收盘验证"""
-    from engine.decision import make_decision
-    from engine.prediction_tracker import record_prediction, verify_predictions, is_record_time
 
     now = time.localtime()
+    # 非交易日跳过（周末+节假日）
+    if not is_trading_day(now):
+        return
+
     is_record = is_record_time(now.tm_hour, now.tm_min)
     is_verify = (now.tm_hour, now.tm_min) == (15, 10)
 
