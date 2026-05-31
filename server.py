@@ -1,5 +1,6 @@
 """AI 量化选股系统 - 主服务器 (单文件版)"""
 import json, os, socket, re, time, threading, shutil, subprocess
+from datetime import datetime
 from flask import Flask, jsonify, request, Response, send_from_directory
 
 # ─── 数据源配置 ───
@@ -23,14 +24,8 @@ def get_active_data_source():
         return "baostock"
     return "tencent"
 
-# ─── UZI-Skill 深度分析集成 ───
-UZI_SKILL_DIR = os.path.expanduser('~/UZI-Skill')
-if not os.path.isdir(UZI_SKILL_DIR):
-    UZI_SKILL_DIR = os.path.join(os.path.dirname(__file__), '..', 'github-skills', 'UZI-Skill')
-UZI_SCRIPTS_DIR = os.path.join(UZI_SKILL_DIR, 'skills', 'deep-analysis', 'scripts')
-UZI_REPORTS_DIR = os.path.join(UZI_SCRIPTS_DIR, 'reports')
+# 静态文件输出目录（排雷/技术评分等写入此目录）
 UZI_STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static', 'uzi')
-UZI_PYTHON = 'python3' if os.name != 'nt' else 'python'
 
 from engine.indicators import *
 from engine.factors import analyze_factors
@@ -38,7 +33,7 @@ from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
 from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, fetch_hot_boards, PREDEFINED
 from engine.decision import make_decision
-from engine.prediction_tracker import record_prediction, verify_predictions, update_prediction_tracks, get_signal_stats, get_stock_stats, get_recent_results, is_record_time, is_trading_day, get_signal_performance
+from engine.prediction_tracker import record_prediction, verify_predictions, update_prediction_tracks, get_signal_stats, get_stock_stats, get_recent_results, is_record_time, is_trading_day, get_signal_performance, auto_diagnose, get_method_multi_offset_stats, get_stock_method_snapshot
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
 STATIC_STOCKS = [
@@ -384,7 +379,7 @@ def _f(v):
     try: return float(v)
     except: return 0.0
 def _int(v):
-    try: return int(v)
+    try: return int(float(v))
     except: return 0
 
 def get_local_ip():
@@ -401,7 +396,11 @@ def get_local_ip():
 
 @app.route('/')
 def index():
-    return send_from_directory('static', 'index.html')
+    resp = send_from_directory('static', 'index.html')
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 @app.route('/api/watchlist', methods=['GET', 'POST', 'DELETE'])
 def watchlist_api():
@@ -541,30 +540,9 @@ def stock_decision_api(code):
     patterns = pat_results.get(full_code, [])
 
     # 板块上下文 (从最新板块快照获取)
-    sector_ctx = None
-    try:
-        snap_path = os.path.join(os.path.dirname(__file__), 'data', 'snapshots', 'sectors.json')
-        if os.path.exists(snap_path):
-            with open(snap_path) as f:
-                snap = json.load(f)
-            sectors = snap.get("sectors", [])
-            # 模糊匹配代码所属板块
-            for sec in sectors:
-                for stk in sec.get("stocks", []):
-                    if stk.get("code") == code:
-                        sector_ctx = {
-                            "up_count": sec.get("up_count", 0),
-                            "down_count": sec.get("down_count", 0),
-                            "pattern_count": sec.get("pattern_count", 0),
-                            "sector_name": sec.get("name", ""),
-                        }
-                        break
-                if sector_ctx:
-                    break
-    except:
-        pass
+    sector_ctx = _find_sector_context(code)
 
-    decision = make_decision(closes, kline, patterns, sr, sector_ctx)
+    decision = make_decision(closes, kline, patterns, sr, sector_ctx, quote=quote, code=code, market=market)
 
     # 附带当前价格和涨跌幅
     decision["price"] = quote.get("price", 0)
@@ -608,110 +586,156 @@ def predictions_performance_api():
     return jsonify(get_signal_performance())
 
 
+@app.route('/api/predictions/diagnose')
+def predictions_diagnose_api():
+    """自动诊断: 分析各信号准确率，找出最准的方法并给出建议"""
+    return jsonify(auto_diagnose())
+
+
+@app.route('/api/predictions/methods/stats')
+def predictions_methods_stats_api():
+    """各方法多时间维度准确率统计"""
+    return jsonify(get_method_multi_offset_stats())
+
+
+@app.route('/api/predictions/methods/<code>')
+def predictions_method_snapshot_api(code):
+    """个股方法快照"""
+    return jsonify(get_stock_method_snapshot(code))
+
+
 # ─── 主力成本分析 ───
 
 def estimate_capital_cost(code, market, klines=None):
     """估算主力资金成本价
-    方法1: 量价分布 — 找出60日内放量日的 VWAP
-    方法2: 大宗交易 — 通过 akshare 获取
+    方法1: 成交量分布 (Volume Profile) — 将每根K线量分配到日内高低区间，找量能最密集的价格带
+    方法2: 主力建仓痕迹 — 放量上涨日的加权均价
     返回: {method1: {}, method2: {}, composite: {}}
     """
     if klines is None:
-        klines = fetch_kline(market + code, 60)
+        klines = fetch_kline(market + code, 120)
 
     result = {"method1": {}, "method2": {}, "composite": {}}
+    if not klines or len(klines) < 20:
+        return result
 
-    # ── 方法1: 量价分布 ──
-    if klines and len(klines) >= 20:
-        closes = [k["close"] for k in klines]
-        vols = [k["volume"] for k in klines]
-        avg_vol = sum(vols) / len(vols)
-        threshold = avg_vol * 1.5
+    closes = [k["close"] for k in klines]
+    current_price = closes[-1]
+    avg_vol = sum(k["volume"] for k in klines) / len(klines)
 
-        # 找出放量日
-        heavy_days = []
-        for k in klines:
-            if k["volume"] > threshold:
-                heavy_days.append(k)
+    # ── 方法1: 成交量分布 (Volume Profile) ──
+    # 将价格区间分成25个桶，每根K线的量按比例分配到当日高低价覆盖的桶
+    all_highs = [k["high"] for k in klines]
+    all_lows = [k["low"] for k in klines]
+    max_price = max(all_highs)
+    min_price = min(all_lows)
+    price_range = max_price - min_price
 
-        if heavy_days:
-            # 计算放量日的 VWAP
-            total_vol = sum(k["volume"] for k in heavy_days)
-            total_vwp = sum(k["close"] * k["volume"] for k in heavy_days)
-            vwap = total_vwp / total_vol if total_vol > 0 else 0
+    if price_range < 0.01:
+        return result
 
-            # 找出最密集的价格区间
-            prices = sorted(set(k["close"] for k in heavy_days))
-            min_p = min(prices)
-            max_p = max(prices)
+    num_buckets = 25
+    bucket_size = price_range / num_buckets
 
-            # 加权成本集中区
-            current_price = closes[-1]
-            pct_above = (current_price - vwap) / vwap * 100 if vwap else 0
+    buckets = [min_price + (i + 0.5) * bucket_size for i in range(num_buckets)]
+    vol_profile = [0.0] * num_buckets
 
-            result["method1"] = {
-                "vwap": round(vwap, 2),
-                "price_low": round(min_p, 2),
-                "price_high": round(max_p, 2),
-                "heavy_days": len(heavy_days),
-                "total_days": len(klines),
-                "avg_vol": int(avg_vol),
-                "current_price": round(current_price, 2),
-                "pct_above_cost": round(pct_above, 2),
-                "signal": "主力成本区下方" if pct_above < -3 else "主力成本区附近" if abs(pct_above) < 3 else "主力成本区上方",
-            }
+    for k in klines:
+        vol = k["volume"]
+        low = k["low"]
+        high = k["high"]
+        day_range = high - low
+        if day_range <= 0:
+            continue
+        start_idx = max(0, int((low - min_price) / bucket_size))
+        end_idx = min(num_buckets - 1, int((high - min_price) / bucket_size))
+        bins = end_idx - start_idx + 1
+        vol_per_bin = vol / bins
+        for i in range(start_idx, end_idx + 1):
+            vol_profile[i] += vol_per_bin
 
-    # ── 方法2: 大宗交易 ──
-    try:
-        if AKSHARE_AVAILABLE:
-            import akshare as ak
-            from datetime import datetime, timedelta
-            today_str = datetime.now().strftime("%Y%m%d")
-            start_str = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
-            df = ak.stock_dzjy_mrmx(symbol="A股", start_date=start_str, end_date=today_str)
-            if df is not None and not df.empty:
-                stock_trades = df
-                if "证券代码" in df.columns:
-                    stock_trades = df[df["证券代码"].astype(str).str.contains(code)]
-                if not stock_trades.empty:
-                    trades = []
-                    for _, row in stock_trades.iterrows():
-                        try:
-                            trades.append({
-                                "date": str(row.get("交易日期", "")),
-                                "price": float(row.get("成交价", 0) or 0),
-                                "volume": int(row.get("成交量", 0) or 0),
-                                "amount": float(row.get("成交额", 0) or 0),
-                                "premium": float(row.get("折溢率", 0) or 0),
-                            })
-                        except:
-                            pass
-                    if trades:
-                        avg_price = sum(t["price"] for t in trades) / len(trades)
-                        total_amt = sum(t.get("amount", 0) or 0 for t in trades)
-                        result["method2"] = {
-                            "trades": trades[-10:],
-                            "total_trades": len(trades),
-                            "avg_price": round(avg_price, 2),
-                            "total_amount": round(total_amt, 2),
-                        }
-    except Exception as e:
-        result["method2"] = {"error": str(e), "trades": []}
+    # POC — 量最大的价格
+    poc_idx = vol_profile.index(max(vol_profile))
+    poc_price = buckets[poc_idx]
+
+    # 价值区间 (VA) — 从POC向两边扩展，直到包含70%总成交量
+    total_vol_all = sum(vol_profile)
+    va_vol_target = total_vol_all * 0.7
+    va_vol = vol_profile[poc_idx]
+    va_low_idx = va_high_idx = poc_idx
+    while va_vol < va_vol_target:
+        left_vol = vol_profile[va_low_idx - 1] if va_low_idx > 0 else 0
+        right_vol = vol_profile[va_high_idx + 1] if va_high_idx < num_buckets - 1 else 0
+        if left_vol >= right_vol and va_low_idx > 0:
+            va_low_idx -= 1
+            va_vol += left_vol
+        elif va_high_idx < num_buckets - 1:
+            va_high_idx += 1
+            va_vol += right_vol
+        else:
+            break
+
+    va_high = buckets[va_high_idx]
+    va_low = buckets[va_low_idx]
+
+    # VA内VWAP
+    va_vwap_total_vol = sum(vol_profile[va_low_idx:va_high_idx + 1])
+    va_vwap_total_val = sum(buckets[i] * vol_profile[i] for i in range(va_low_idx, va_high_idx + 1))
+    va_vwap = va_vwap_total_val / va_vwap_total_vol if va_vwap_total_vol > 0 else current_price
+
+    # 成本区间显示: 取VA内的最低最高价(不是全量范围)
+    pct_above_vp = (current_price - va_vwap) / va_vwap * 100 if va_vwap else 0
+    signal = "主力成本区下方" if pct_above_vp < -3 else "主力成本区附近" if abs(pct_above_vp) < 3 else "主力成本区上方"
+
+    result["method1"] = {
+        "vp_cost": round(va_vwap, 2),
+        "poc": round(poc_price, 2),
+        "va_low": round(va_low, 2),
+        "va_high": round(va_high, 2),
+        "current_price": round(current_price, 2),
+        "pct_above_cost": round(pct_above_vp, 2),
+        "signal": signal,
+    }
+
+    # ── 方法2: 主力建仓痕迹 — 放量上涨日 ──
+    accumulation_days = []
+    for i in range(1, len(klines)):
+        k = klines[i]
+        pk = klines[i - 1]
+        # 放量上涨: volume > 1.5x 均量, 收阳, 收盘高于昨收
+        if (k["volume"] > avg_vol * 1.5
+                and k["close"] > k["open"]
+                and k["close"] > pk["close"]):
+            accumulation_days.append(k)
+
+    if accumulation_days:
+        acc_vol = sum(k["volume"] for k in accumulation_days)
+        acc_vwap = sum(k["close"] * k["volume"] for k in accumulation_days) / acc_vol
+        acc_min = min(k["close"] for k in accumulation_days)
+        acc_max = max(k["close"] for k in accumulation_days)
+        pct_above_acc = (current_price - acc_vwap) / acc_vwap * 100 if acc_vwap else 0
+        result["method2"] = {
+            "acc_cost": round(acc_vwap, 2),
+            "acc_low": round(acc_min, 2),
+            "acc_high": round(acc_max, 2),
+            "acc_days": len(accumulation_days),
+            "pct_above_cost": round(pct_above_acc, 2),
+            "signal": "建仓区下方" if pct_above_acc < -3 else "建仓区附近" if abs(pct_above_acc) < 3 else "建仓区上方",
+        }
 
     # ── 综合判断 ──
     prices_info = []
-    if result["method1"].get("vwap"):
-        prices_info.append(("量价成本", result["method1"]["vwap"]))
-    if result["method2"].get("avg_price"):
-        prices_info.append(("大宗交易", result["method2"]["avg_price"]))
+    if result["method1"].get("vp_cost"):
+        prices_info.append(("量分布成本", result["method1"]["vp_cost"]))
+    if result["method2"].get("acc_cost"):
+        prices_info.append(("建仓成本", result["method2"]["acc_cost"]))
 
     if prices_info:
         avg_cost = sum(p[1] for p in prices_info) / len(prices_info)
-        cur = klines[-1]["close"] if klines else 0
-        composite_pct = (cur - avg_cost) / avg_cost * 100 if avg_cost else 0
+        composite_pct = (current_price - avg_cost) / avg_cost * 100 if avg_cost else 0
         result["composite"] = {
             "avg_cost": round(avg_cost, 2),
-            "current_price": round(cur, 2),
+            "current_price": round(current_price, 2),
             "pct_above_cost": round(composite_pct, 2),
             "judgment": "主力大概率盈利" if composite_pct > 5 else "主力成本附近" if abs(composite_pct) < 5 else "主力可能被套",
             "sources": [p[0] for p in prices_info],
@@ -722,13 +746,46 @@ def estimate_capital_cost(code, market, klines=None):
 
 @app.route('/api/stock/<code>/capital')
 def stock_capital_api(code):
-    """主力资金成本分析：量价分布 + 大宗交易"""
+    """主力资金成本分析：量价分布 + 大宗交易 + 多周期均线参考"""
     market = request.args.get('market', 'sh')
     full_code = market + code
-    kline = fetch_kline(full_code, 60)
+    kline = fetch_kline(full_code, 250)  # 一年约250个交易日
+    if kline is None:
+        kline = []
     result = estimate_capital_cost(code, market, kline)
     result["code"] = code
     result["name"] = ""
+
+    # ── 多周期均线参考成本 ──
+    closes = [k["close"] for k in kline]
+    ma_periods = [60, 120, 250]
+    ma_refs = {}
+    for p in ma_periods:
+        if len(closes) >= p:
+            val = sum(closes[-p:]) / p
+            pct = (closes[-1] - val) / val * 100 if val else 0
+            ma_refs[f"MA{p}"] = {
+                "cost": round(val, 2),
+                "pct_above": round(pct, 2),
+            }
+    if ma_refs:
+        result["ma_references"] = ma_refs
+
+    # ── 全周期 VWAP 参考成本 ──
+    if len(closes) >= 20:
+        try:
+            total_vol = sum(k["volume"] for k in kline)
+            total_val = sum(k["close"] * k["volume"] for k in kline)
+            if total_vol > 0:
+                vwap = total_val / total_vol
+                vwap_pct = (closes[-1] - vwap) / vwap * 100
+                result["vwap_ref"] = {
+                    "cost": round(vwap, 2),
+                    "pct_above": round(vwap_pct, 2),
+                }
+        except Exception:
+            pass
+
     # 取最新行情获取名称
     quotes = fetch_tencent_quote(full_code)
     q = quotes.get(code, {})
@@ -737,55 +794,9 @@ def stock_capital_api(code):
     return jsonify(result)
 
 
-# ─── UZI 深度分析任务存储 ───
+# ─── 后台任务存储（排雷/技术评分等） ───
 uzi_tasks = {}
 uzi_tasks_lock = threading.Lock()
-
-
-def _run_uzi_analysis(code, market, task_id):
-    """后台运行 UZI 分析"""
-    try:
-        full_code = market + code if market else code
-        if not full_code.startswith(('sh', 'sz', 'SH', 'SZ')):
-            full_code = 'sh' + code
-
-        cmd = [UZI_PYTHON, 'run.py', full_code, '--depth', 'lite', '--no-browser']
-        proc = subprocess.run(cmd, cwd=UZI_SKILL_DIR, capture_output=True, text=True, timeout=600)
-
-        # 找到生成的最新报告
-        from datetime import datetime
-        date_str = datetime.now().strftime("%Y%m%d")
-        report_dir = os.path.join(UZI_REPORTS_DIR, f"{full_code}_{date_str}")
-        standalone = os.path.join(report_dir, "full-report-standalone.html")
-
-        if not os.path.exists(standalone):
-            # 尝试模糊查找
-            import glob
-            candidates = glob.glob(os.path.join(UZI_REPORTS_DIR, f"{full_code}_*", "full-report-standalone.html"))
-            if candidates:
-                standalone = sorted(candidates)[-1]
-
-        if os.path.exists(standalone):
-            # 复制到 Flask static 目录
-            os.makedirs(UZI_STATIC_DIR, exist_ok=True)
-            dest = os.path.join(UZI_STATIC_DIR, f"{code}.html")
-            shutil.copy2(standalone, dest)
-            with uzi_tasks_lock:
-                uzi_tasks[task_id] = {'status': 'done', 'url': f'/uzi/{code}.html', 'file': dest}
-        else:
-            # 输出日志帮助排查
-            log_file = os.path.join(UZI_STATIC_DIR, f"{code}_log.txt")
-            with open(log_file, 'w', encoding='utf-8') as f:
-                f.write(f"STDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}")
-            with uzi_tasks_lock:
-                uzi_tasks[task_id] = {'status': 'error', 'msg': '报告未生成', 'log': f'/uzi/{code}_log.txt'}
-
-    except subprocess.TimeoutExpired:
-        with uzi_tasks_lock:
-            uzi_tasks[task_id] = {'status': 'error', 'msg': '分析超时(10min)'}
-    except Exception as e:
-        with uzi_tasks_lock:
-            uzi_tasks[task_id] = {'status': 'error', 'msg': str(e)}
 
 
 @app.route('/api/datasource', methods=['GET', 'POST'])
@@ -802,36 +813,9 @@ def datasource_switch():
     })
 
 
-@app.route('/api/stock/<code>/uzi', methods=['POST'])
-def trigger_uzi_analysis(code):
-    """触发 UZI 深度分析"""
-    market = request.args.get('market', 'sh')
-    task_id = f"{code}_{int(time.time())}"
-
-    with uzi_tasks_lock:
-        uzi_tasks[task_id] = {'status': 'running'}
-
-    t = threading.Thread(target=_run_uzi_analysis, args=(code, market, task_id), daemon=True)
-    t.start()
-
-    return jsonify({'task_id': task_id, 'status': 'running'})
-
-
-@app.route('/api/stock/<code>/uzi/status')
-def uzi_analysis_status(code):
-    """查询 UZI 分析状态"""
-    # 找最新的 task
-    with uzi_tasks_lock:
-        candidates = {k: v for k, v in uzi_tasks.items() if k.startswith(f"{code}_")}
-        if not candidates:
-            return jsonify({'status': 'no_task'})
-        latest_id = sorted(candidates.keys())[-1]
-        return jsonify({'task_id': latest_id, **candidates[latest_id]})
-
-
 @app.route('/uzi/<path:filename>')
-def serve_uzi_report(filename):
-    """提供 UZI 生成的 HTML 报告"""
+def serve_uzi_output(filename):
+    """提供后台任务生成的静态文件（排雷报告等）"""
     return send_from_directory(UZI_STATIC_DIR, filename)
 
 
@@ -945,7 +929,28 @@ COMMODITIES = [
     {"id": "W",   "name": "美小麦", "short": "Wheat", "exchange": "CBOT", "type": "foreign"},
     {"id": "C",   "name": "美玉米", "short": "Corn", "exchange": "CBOT", "type": "foreign"},
     {"id": "S",   "name": "美大豆", "short": "Soybeans", "exchange": "CBOT", "type": "foreign"},
+    # LME real-time (via futures_global_spot_em)
+    {"id": "LME_CU", "name": "伦铜", "short": "LME Copper", "exchange": "LME", "type": "lme"},
+    {"id": "LME_AL", "name": "伦铝", "short": "LME Aluminum", "exchange": "LME", "type": "lme"},
+    {"id": "LME_ZN", "name": "伦锌", "short": "LME Zinc", "exchange": "LME", "type": "lme"},
+    {"id": "LME_NI", "name": "伦镍", "short": "LME Nickel", "exchange": "LME", "type": "lme"},
+    {"id": "LME_PB", "name": "伦铅", "short": "LME Lead", "exchange": "LME", "type": "lme"},
+    {"id": "LME_SN", "name": "伦锡", "short": "LME Tin", "exchange": "LME", "type": "lme"},
 ]
+
+_LME_SPOT_MAP = {
+    'LME_CU': 'LCPT',
+    'LME_AL': 'LALT',
+    'LME_ZN': 'LZNT',
+    'LME_NI': 'LNKT',
+    'LME_PB': 'LLDT',
+    'LME_SN': 'LTNT',
+}
+
+_LME_STOCK_NAMES = {  # column names in macro_euro_lme_stock
+    '铜': 'LME_CU', '铝': 'LME_AL', '铅': 'LME_PB',
+    '锌': 'LME_ZN', '镍': 'LME_NI', '锡': 'LME_SN',
+}
 
 _COMMODITY_CACHE = {}  # {cid: {data, time}}
 
@@ -959,10 +964,41 @@ def fetch_commodity_kline(cid, days=365):
         return cached['data'], None
     try:
         import akshare as ak
-        # 判断是国内还是国际商品
         info = next((c for c in COMMODITIES if c['id'] == cid), None)
-        is_foreign = info and info.get('type') == 'foreign'
+        if not info:
+            return None, f"未知商品: {cid}"
+        ctype = info.get('type')
 
+        # --- LME real-time (no k-line history available) ---
+        if ctype == 'lme':
+            spot_code = _LME_SPOT_MAP.get(cid)
+            if not spot_code:
+                return None, f"无 LME 代码映射: {cid}"
+            spot_df = ak.futures_global_spot_em()
+            if spot_df is None or spot_df.empty:
+                return None, "获取 LME 行情失败"
+            row = spot_df[spot_df.iloc[:, 1] == spot_code]
+            if row.empty:
+                return None, f"未找到 {info['name']} 行情"
+            r = row.iloc[0]
+            price = float(r.iloc[3]) if r.iloc[3] != 'nan' else 0
+            open_p = float(r.iloc[6]) if r.iloc[6] != 'nan' else 0
+            high = float(r.iloc[7]) if r.iloc[7] != 'nan' else 0
+            low = float(r.iloc[8]) if r.iloc[8] != 'nan' else 0
+            change = float(r.iloc[4]) if r.iloc[4] != 'nan' else 0
+            # 用当前 spot 数据构造 2 根 k 线让涨跌幅计算可用
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            prev_close = price - change
+            kline = [
+                {'date': '--', 'open': prev_close, 'high': prev_close, 'low': prev_close, 'close': prev_close, 'volume': 0},
+                {'date': today_str, 'open': open_p, 'high': high, 'low': low, 'close': price, 'volume': 0,
+                 'change': round(change, 2), 'change_pct': round(change / prev_close * 100, 2) if prev_close else 0},
+            ]
+            _COMMODITY_CACHE[cid] = {'data': kline, 'time': now}
+            return kline, None
+
+        # --- Domestic & foreign ---
+        is_foreign = ctype == 'foreign'
         if is_foreign:
             df = ak.futures_foreign_hist(symbol=cid)
         else:
@@ -970,7 +1006,6 @@ def fetch_commodity_kline(cid, days=365):
 
         if df is None or df.empty:
             return None, f"未获取到 {cid} 数据"
-        # 列名: date, open, high, low, close, volume, ...
         df = df.sort_values('date').tail(days)
         kline = []
         for _, row in df.iterrows():
@@ -1155,7 +1190,33 @@ def commodity_detail():
     change = round(last.get('close', 0) - prev.get('close', 0), 2) if prev else 0
     change_pct = round(change / prev.get('close', 1) * 100, 2) if prev.get('close', 0) > 0 else 0
 
-    return jsonify({
+    # LME 库存数据
+    lme_stock = None
+    if info.get('type') == 'lme' and AKSHARE_AVAILABLE:
+        try:
+            import akshare as ak
+            stock_df = ak.macro_euro_lme_stock()
+            if stock_df is not None and not stock_df.empty:
+                latest = stock_df.iloc[-1]
+                date_str = str(latest.iloc[0])
+                lme_stock = {'date': date_str, 'items': []}
+                for cn_name, cid_inner in _LME_STOCK_NAMES.items():
+                    if cid_inner != code:
+                        continue
+                    # column order: name, Cu-总库存, Cu-注册仓单, Cu-注销仓单
+                    for col_idx in range(1, len(latest), 4):
+                        metal_name = stock_df.columns[col_idx].split('-')[0]
+                        if metal_name == cn_name:
+                            lme_stock['items'].append({
+                                'total': float(latest.iloc[col_idx]) if latest.iloc[col_idx] else 0,
+                                'registered': float(latest.iloc[col_idx + 1]) if latest.iloc[col_idx + 1] else 0,
+                                'cancelled': float(latest.iloc[col_idx + 2]) if latest.iloc[col_idx + 2] else 0,
+                            })
+                            break
+        except Exception:
+            pass
+
+    resp = {
         'code': code,
         'name': info['name'],
         'short': info['short'],
@@ -1163,15 +1224,18 @@ def commodity_detail():
         'type': info.get('type', 'domestic'),
         'kline': kline[-120:],
         'price': round(last.get('close', 0), 2) if last else 0,
-        'change': change,
-        'change_pct': change_pct,
+        'change': round(last.get('change', change), 2) if last else 0,
+        'change_pct': round(last.get('change_pct', change_pct), 2) if last else 0,
         'high': round(last.get('high', 0), 2) if last else 0,
         'low': round(last.get('low', 0), 2) if last else 0,
         'open': round(last.get('open', 0), 2) if last else 0,
         'volume': last.get('volume', 0) if last else 0,
         'trend': trend,
         'data_source': 'akshare',
-    })
+    }
+    if lme_stock:
+        resp['lme_stock'] = lme_stock
+    return jsonify(resp)
 
 
 # ─── 板块追踪 API ───
@@ -1255,6 +1319,164 @@ def scan_watchlist():
 
     results.sort(key=lambda x: x['score'], reverse=True)
     return jsonify({'results': results, 'count': len(results)})
+
+
+def _find_sector_context(code):
+    """从最新板块快照中查找股票所属板块上下文"""
+    try:
+        snap_path = os.path.join(DATA_DIR, 'snapshots', 'sectors.json')
+        if os.path.exists(snap_path):
+            with open(snap_path, encoding='utf-8') as f:
+                snap = json.load(f)
+            for sec in snap.get("sectors", []):
+                for stk in sec.get("stocks", []):
+                    if stk.get("code") == code:
+                        return {
+                            "up_count": sec.get("up_count", 0),
+                            "down_count": sec.get("down_count", 0),
+                            "pattern_count": sec.get("pattern_count", 0),
+                            "sector_name": sec.get("name", ""),
+                        }
+    except Exception:
+        pass
+    return None
+
+
+@app.route('/api/scan/deep')
+def scan_watchlist_deep():
+    """深度分析自选股 — 对每只股票运行完整决策引擎"""
+    wl = load_watchlist()
+    if not wl:
+        return jsonify({'results': [], 'count': 0, 'message': '自选股列表为空'})
+
+    import concurrent.futures
+
+    def analyze_one(s):
+        code, market = s['code'], s['market']
+        full_code = market + code
+        try:
+            kline = fetch_kline(full_code, 120)
+            if len(kline) < 20:
+                return None
+            quotes = fetch_tencent_quote(full_code)
+            quote = quotes.get(code, {})
+            price = quote.get('price', kline[-1]['close'])
+            if price <= 0:
+                return None
+
+            closes = [k['close'] for k in kline]
+            sr = calc_support_resistance(kline)
+            pats = scan_patterns({full_code: kline}) if len(kline) >= 20 else {}
+            patterns = pats.get(full_code, [])
+            sector_ctx = _find_sector_context(code)
+            decision = make_decision(closes, kline, patterns, sr, sector_ctx,
+                                     quote=quote, code=code, market=market)
+
+            # 风险指标（7方法体系下，5+方法分歧才算严重）
+            methods = decision.get('method_signals', {})
+            main_signal = decision['signal']
+            disagreement = sum(1 for m in methods.values()
+                               if m.get('signal') != main_signal)
+            near_resistance = sr.get('dist_to_resistance', 999) < 2.0 if sr else False
+            capital_outflow = (decision.get('details', {})
+                               .get('capital', {}).get('score', 50) < 30)
+            high_risk = (disagreement >= 5) + bool(near_resistance) + bool(capital_outflow) >= 2
+
+            return {
+                'code': code, 'market': market,
+                'name': quote.get('name', s.get('name', code)),
+                'price': price,
+                'changePercent': quote.get('changePercent', 0),
+                'change': quote.get('change', 0),
+                'volume': quote.get('volume', 0),
+                'pe': quote.get('pe', 0),
+                'signal': decision['signal'],
+                'sub': decision['sub'],
+                'score': decision['score'],
+                'color': decision['color'],
+                'details': decision['details'],
+                'method_signals': methods,
+                'reasons': decision.get('reasons', []),
+                'sr': {
+                    'nearest_resistance': sr.get('nearest_resistance'),
+                    'nearest_support': sr.get('nearest_support'),
+                    'dist_to_resistance': sr.get('dist_to_resistance'),
+                    'dist_to_support': sr.get('dist_to_support'),
+                    'resistance_strength': sr.get('resistance_strength'),
+                    'support_strength': sr.get('support_strength'),
+                } if sr else None,
+                'risk_indicators': {
+                    'method_disagreement': disagreement,
+                    'near_resistance': near_resistance,
+                    'capital_outflow': capital_outflow,
+                    'high_risk': high_risk,
+                },
+            }
+        except Exception:
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
+        results = list(exe.map(analyze_one, wl))
+
+    results = [r for r in results if r is not None]
+
+    # 排序：买入 > 增持 > 持有 > 减仓 > 卖出，同信号按得分降序
+    sig_rank = {'买入': 0, '增持': 1, '持有': 2, '减仓': 3, '卖出': 4}
+    results.sort(key=lambda r: (sig_rank.get(r['signal'], 9), -r['score']))
+
+    return jsonify({'results': results, 'count': len(results)})
+
+
+@app.route('/api/watchlist/news')
+def watchlist_news():
+    """获取所有自选股最新新闻"""
+    wl = load_watchlist()
+    if not wl:
+        return jsonify({'results': [], 'summary': {}, 'updated': ''})
+
+    import concurrent.futures
+    from datetime import datetime
+
+    def fetch_one(s):
+        code, market = s['code'], s['market']
+        try:
+            news = fetch_news(code, market)
+            sent_score, analyzed = analyze_sentiment(news)
+            pos = sum(1 for n in analyzed if n['sentiment'] == 'positive')
+            neg = sum(1 for n in analyzed if n['sentiment'] == 'negative')
+            neu = sum(1 for n in analyzed if n['sentiment'] == 'neutral')
+            return {
+                'code': code,
+                'market': market,
+                'name': s.get('name', code),
+                'news': analyzed[:5],
+                'sentiment_score': round(sent_score, 2),
+                'total_positive': pos,
+                'total_negative': neg,
+                'total_neutral': neu,
+            }
+        except Exception:
+            return None
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
+        futures = {exe.submit(fetch_one, s): s for s in wl}
+        for f in concurrent.futures.as_completed(futures, timeout=20):
+            r = f.result()
+            if r:
+                results.append(r)
+
+    summary = {'positive': 0, 'negative': 0, 'neutral': 0}
+    for r in results:
+        summary['positive'] += r['total_positive']
+        summary['negative'] += r['total_negative']
+        summary['neutral'] += r['total_neutral']
+
+    return jsonify({
+        'results': results,
+        'summary': summary,
+        'updated': datetime.now().strftime('%H:%M:%S'),
+    })
 
 
 @app.route('/api/scan/patterns', methods=['POST'])
@@ -1790,6 +2012,13 @@ def _run_scheduled_scans():
         # 批量获取实时行情
         codes_str = ','.join(f'{s["market"]}{s["code"]}' for s in all_scanned)
         quotes = fetch_tencent_quote(codes_str) if codes_str else {}
+        # 加载板块数据（用于 sector_ctx）
+        try:
+            snap_path = os.path.join(os.path.dirname(__file__), 'data', 'snapshots', 'sectors.json')
+            _sectors_snap = json.load(open(snap_path)) if os.path.exists(snap_path) else {}
+            _sectors_list = _sectors_snap.get("sectors", [])
+        except:
+            _sectors_list = []
         recorded = 0
         for s in all_scanned:
             try:
@@ -1798,13 +2027,28 @@ def _run_scheduled_scans():
                 price = quote.get('price', s['kline'][-1]['close'] if s['kline'] else 0)
                 if price <= 0:
                     continue
+                # 查找板块上下文
+                sector_ctx = None
+                for sec in _sectors_list:
+                    for stk in sec.get("stocks", []):
+                        if stk.get("code") == code and stk.get("market") == market:
+                            sector_ctx = {
+                                "up_count": sec.get("up_count", 0),
+                                "down_count": sec.get("down_count", 0),
+                                "pattern_count": sec.get("pattern_count", 0),
+                                "sector_name": sec.get("name", ""),
+                            }
+                            break
+                    if sector_ctx:
+                        break
                 closes = [k['close'] for k in s['kline']]
                 sr = calc_support_resistance(s['kline']) if len(s['kline']) >= 20 else {}
                 pats = scan_patterns({market+code: s['kline']}) if len(s['kline']) >= 20 else {}
                 patterns = pats.get(market+code, [])
-                decision = make_decision(closes, s['kline'], patterns, sr, None, quote)
+                decision = make_decision(closes, s['kline'], patterns, sr, sector_ctx, quote, code=code, market=market)
                 record_prediction(code, market, s['name'],
-                                 decision['signal'], decision['score'], price)
+                                 decision['signal'], decision['score'], price,
+                                 methods=decision.get('method_signals', {}))
                 recorded += 1
             except:
                 pass
