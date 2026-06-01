@@ -1697,6 +1697,41 @@ def scan_market_api():
     })
 
 
+@app.route('/api/dailypick')
+def dailypick_api():
+    """返回每日一股推荐结果"""
+    period, valid_from, valid_until = get_dailypick_period()
+    cached = None
+    if os.path.exists(DAILYPICK_FILE):
+        try:
+            with open(DAILYPICK_FILE, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+        except:
+            pass
+
+    # 检查缓存是否有效
+    if cached and cached.get('status') == 'ready' and cached.get('period') == period:
+        return jsonify({
+            'status': 'ready',
+            'period': period,
+            'valid_from': valid_from,
+            'valid_until': valid_until,
+            'pick': cached.get('pick'),
+            'computed_at': cached.get('computed_at'),
+        })
+
+    # 缓存过期或不存在 → 后台异步计算
+    import threading
+    threading.Thread(target=compute_daily_pick, args=(period,), daemon=True).start()
+    return jsonify({
+        'status': 'computing',
+        'period': period,
+        'valid_from': valid_from,
+        'valid_until': valid_until,
+        'message': '正在全市场扫描，请10秒后刷新...',
+    })
+
+
 # =================== 导出功能 ===================
 
 @app.route('/api/export/scan')
@@ -1920,7 +1955,192 @@ RECORD_TIMES_15MIN = [
     (9,25),(9,40),(9,55),(10,10),(10,25),(10,40),(10,55),(11,10),(11,25),
     (13,10),(13,25),(13,40),(13,55),(14,10),(14,25),(14,40),(14,55),(15,10),
 ]
-SCHEDULE_TIMES = RECORD_TIMES_15MIN
+SCHEDULE_TIMES = RECORD_TIMES_15MIN + [(15, 1)]  # 15:01 触发明日推荐计算
+_DAILY_PICK_LOCK = threading.Lock()
+
+# ─── 每日一股 ───
+DAILYPICK_FILE = os.path.join(DATA_DIR, 'dailypick.json')
+
+def get_dailypick_period():
+    """根据当前时间返回 (period, valid_from, valid_until)"""
+    now = time.localtime()
+    hm = now.tm_hour * 60 + now.tm_min
+    today = time.strftime('%Y-%m-%d')
+    tomorrow_ts = time.mktime(now) + 86400
+    tomorrow = time.strftime('%Y-%m-%d', time.localtime(tomorrow_ts))
+    if hm < 9 * 60 + 25:
+        return 'afternoon', today + ' 15:01', today + ' 09:25'
+    elif hm < 15 * 60 + 1:
+        return 'morning', today + ' 09:25', today + ' 15:01'
+    else:
+        return 'afternoon', today + ' 15:01', tomorrow + ' 09:25'
+
+def compute_daily_pick(period='morning'):
+    """全市场扫描，选出今日/明日推荐的一支最优股票"""
+    if not _DAILY_PICK_LOCK.acquire(blocking=False):
+        print('[dailypick] 计算中，跳过重复请求')
+        return None
+    try:
+        print(f'[dailypick] 开始计算 {period} pick...')
+        stocks = fetch_a_share_list()
+        if not stocks:
+            return None
+        # 过滤涨停、ST、PE 负
+        candidates = [s for s in stocks
+                      if (s.get('change_pct', 0) or 0) < 9.0
+                      and (s.get('pe', 0) or 0) >= 0]
+        # 本地文件 volume 为 0，无法按活跃度排序 → 取代码中间段的股票（主流沪深主板）
+        # 跳过 000xxx-002xxx（深圳主板）前段和 600xxx 前段，取 600200-600999、000400-001999 等区间
+        if candidates and all(c.get('volume', 0) == 0 for c in candidates):
+            import random
+            random.shuffle(candidates)
+            candidates = candidates[:400]
+        else:
+            candidates.sort(key=lambda x: abs(x.get('volume', 0) or 0), reverse=True)
+            candidates = candidates[:400]
+        print(f'[dailypick] 候选 {len(candidates)} 只，获取K线...')
+
+        import concurrent.futures
+        def fetch_kl(s):
+            try:
+                k = fetch_kline(s['market'] + s['code'], 120)
+                return s, k
+            except:
+                return s, []
+        kline_map = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as exe:
+            for s, k in exe.map(fetch_kl, candidates):
+                if len(k) >= 60:
+                    kline_map[s['code']] = {'info': s, 'kline': k}
+        print(f'[dailypick] K线就绪 {len(kline_map)} 只，获取实时行情...')
+
+        # 批量获取实时行情（用于分时评分）
+        quote_codes = ','.join(f'{v["info"]["market"]}{code}' for code, v in kline_map.items())
+        quotes = fetch_tencent_quote(quote_codes) if quote_codes else {}
+
+        print(f'[dailypick] 行情就绪，计算决策...')
+
+        sector_list = []
+        try:
+            snap_path = os.path.join(DATA_DIR, 'snapshots', 'sectors.json')
+            if os.path.exists(snap_path):
+                sector_list = json.load(open(snap_path)).get('sectors', [])
+        except:
+            pass
+
+        from engine.indicators import calc_support_resistance
+        scored = []
+        for code, item in kline_map.items():
+            try:
+                s = item['info']
+                k = item['kline']
+                closes = [x['close'] for x in k]
+                sr = calc_support_resistance(k)
+                sector_ctx = None
+                for sec in sector_list:
+                    for stk in sec.get('stocks', []):
+                        if stk.get('code') == code and stk.get('market') == s['market']:
+                            sector_ctx = {
+                                'up_count': sec.get('up_count', 0),
+                                'down_count': sec.get('down_count', 0),
+                                'pattern_count': sec.get('pattern_count', 0),
+                                'sector_name': sec.get('name', ''),
+                            }
+                            break
+                    if sector_ctx:
+                        break
+                pats = scan_patterns({s['market'] + code: k})
+                patterns = pats.get(s['market'] + code, [])
+                pattern_names = [p['name'] for p in patterns]
+                # 用最新收盘价作为价格
+                cur_price = closes[-1] if closes else 0
+                cur_chg = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
+                q = quotes.get(code, {}) if isinstance(quotes, dict) else {}
+                decision = make_decision(closes, k, patterns, sr, sector_ctx,
+                                         quote=q, code=code, market=s['market'])
+                # 筛选：排除涨停
+                if cur_chg < 9.0:
+                    agree = sum(1 for d in decision.get('details', {}).values()
+                                if d.get('score', 0) >= 60)
+                    scored.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'price': cur_price, 'change_pct': round(cur_chg, 2),
+                        'signal': decision['signal'], 'score': decision['score'],
+                        'details': decision.get('details', {}),
+                        'reasons': decision.get('reasons', []),
+                        'patterns_found': pattern_names,
+                        'method_agree': agree, 'total_methods': 7,
+                        'sr': sr,
+                    })
+            except:
+                pass
+
+        if not scored:
+            print('[dailypick] 无符合条件的股票')
+            return None
+
+        # 排序: score 降序, 优先买入信号, method_agree 降序
+        scored.sort(key=lambda r: (-r['score'], r['signal'] != '买入', -r['method_agree']))
+        best = scored[0]
+        # 确保前5名没有接近涨停的
+        for b in scored[:5]:
+            if b['change_pct'] < 8.5:
+                best = b
+                break
+
+        if best['score'] < 55:
+            print(f'[dailypick] 最高分仅 {best["score"]}，不值得推荐')
+            return None
+
+        pick = {
+            'code': best['code'], 'market': best['market'], 'name': best['name'],
+            'price': best['price'], 'change_pct': best['change_pct'],
+            'signal': best['signal'], 'score': best['score'],
+            'method_agree': best['method_agree'],
+            'total_methods': best['total_methods'],
+            'details': {},
+            'top_reasons': best['reasons'][:5],
+            'patterns_found': best['patterns_found'],
+            'risk_warning': '',
+            'sr': best['sr'],
+        }
+        for key, val in best['details'].items():
+            s = val.get('score', 50)
+            sig = '买入' if s >= 75 else '增持' if s >= 60 else '持有' if s >= 45 else '卖出'
+            pick['details'][key] = {'score': s, 'signal': sig, 'reasons': val.get('reasons', [])}
+
+        risk_parts = []
+        if best['change_pct'] > 7:
+            risk_parts.append(f'涨幅较大({best["change_pct"]}%)')
+        if best['method_agree'] < 4:
+            risk_parts.append('方法分歧较大')
+        pick['risk_warning'] = '；'.join(risk_parts) if risk_parts else ''
+
+        now_ts = time.time()
+        if period == 'morning':
+            valid_from = time.strftime('%Y-%m-%d') + ' 09:25'
+            valid_until = time.strftime('%Y-%m-%d') + ' 15:01'
+        else:
+            valid_from = time.strftime('%Y-%m-%d') + ' 15:01'
+            valid_until = time.strftime('%Y-%m-%d', time.localtime(now_ts + 86400)) + ' 09:25'
+
+        payload = {
+            'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
+            'status': 'ready', 'pick': pick,
+            'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        os.makedirs(os.path.dirname(DAILYPICK_FILE), exist_ok=True)
+        with open(DAILYPICK_FILE, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        print(f'[dailypick] {period} pick -> {best["name"]}({best["code"]}) score={best["score"]}')
+        return payload
+    except Exception as e:
+        print(f'[dailypick] 计算失败: {e}')
+        import traceback; traceback.print_exc()
+        return None
+    finally:
+        _DAILY_PICK_LOCK.release()
+
 _SCHEDULER_RUNNING = False
 
 def _save_snapshot(name, data):
@@ -2062,6 +2282,15 @@ def _run_scheduled_scans():
             print(f'[scheduler] 预测验证: {vcount} 条, 追踪更新: {tcount} 条')
         except Exception as e:
             print(f'[scheduler] 验证失败: {e}')
+
+    # 5. 每日一股计算
+    hm = (now.tm_hour, now.tm_min)
+    if hm == (9, 25):
+        print('[scheduler] 触发 每日一股(今日推荐)...')
+        threading.Thread(target=compute_daily_pick, args=('morning',), daemon=True).start()
+    elif hm == (15, 1):
+        print('[scheduler] 触发 每日一股(明日推荐)...')
+        threading.Thread(target=compute_daily_pick, args=('afternoon',), daemon=True).start()
 
     print(f'[scheduler] 扫描完成')
 
