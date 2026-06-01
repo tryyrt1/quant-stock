@@ -101,6 +101,67 @@ def calc_obv(klines):
     return obv
 
 
+def calc_biasvol(closes, volumes, period=20):
+    """成交量加权乖离率 BIASVOL — A股最有效因子 (IC 0.0749)
+    公式: BIAS = (close - MA) / MA, BIASVOL = BIAS * (volume / avg_volume)
+    高成交量下的价格偏离比低成交量更有意义（趋势反转信号更强）
+    """
+    if len(closes) < period + 1:
+        return []
+    ma = calc_ma(closes, period)
+    avg_vol = sum(volumes[-period:]) / period
+    if avg_vol <= 0:
+        return []
+    result = []
+    for i in range(len(closes)):
+        if ma[i] is None or ma[i] == 0:
+            result.append(None)
+            continue
+        bias = (closes[i] - ma[i]) / ma[i] * 100
+        vol_ratio = volumes[i] / avg_vol
+        result.append(round(bias * vol_ratio, 4))
+    return result
+
+
+def calc_vp_correlation(closes, volumes, period=20):
+    """量价相关性系数 — A股最稳定因子 (IR 0.5975)
+    滚动计算每日涨跌幅与成交量变化率的相关系数
+    返回值: 最近period天的相关系数列表, 最后一个是当前值
+    """
+    if len(closes) < period + 2 or len(volumes) < period + 2:
+        return []
+    # 计算每日涨跌幅和成交量变化率
+    returns = []
+    vol_changes = []
+    for i in range(1, len(closes)):
+        if closes[i-1] > 0 and volumes[i-1] > 0:
+            ret = (closes[i] - closes[i-1]) / closes[i-1] * 100
+            vchg = (volumes[i] - volumes[i-1]) / volumes[i-1] * 100
+            returns.append(ret)
+            vol_changes.append(vchg)
+    if len(returns) < period:
+        return []
+    result = []
+    for i in range(period, len(returns) + 1):
+        r_slice = returns[i-period:i]
+        v_slice = vol_changes[i-period:i]
+        n = len(r_slice)
+        if n < 2:
+            result.append(None)
+            continue
+        avg_r = sum(r_slice) / n
+        avg_v = sum(v_slice) / n
+        num = sum((r_slice[j] - avg_r) * (v_slice[j] - avg_v) for j in range(n))
+        den_r = math.sqrt(sum((r_slice[j] - avg_r) ** 2 for j in range(n)))
+        den_v = math.sqrt(sum((v_slice[j] - avg_v) ** 2 for j in range(n)))
+        if den_r * den_v == 0:
+            result.append(0)
+        else:
+            corr = num / (den_r * den_v)
+            result.append(round(corr, 4))
+    return result
+
+
 def calc_support_resistance(kline):
     """
     计算压力位和支撑位

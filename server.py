@@ -33,7 +33,7 @@ from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
 from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, fetch_hot_boards, PREDEFINED
 from engine.decision import make_decision
-from engine.prediction_tracker import record_prediction, verify_predictions, update_prediction_tracks, get_signal_stats, get_stock_stats, get_recent_results, is_record_time, is_trading_day, get_signal_performance, auto_diagnose, get_method_multi_offset_stats, get_stock_method_snapshot
+from engine.prediction_tracker import record_prediction, verify_predictions, update_prediction_tracks, is_record_time, is_trading_day, get_stock_stats, get_recent_results, record_nextday_prediction, verify_nextday_predictions, get_nextday_stats
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
 STATIC_STOCKS = [
@@ -402,6 +402,10 @@ def index():
     resp.headers['Expires'] = '0'
     return resp
 
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
 @app.route('/api/watchlist', methods=['GET', 'POST', 'DELETE'])
 def watchlist_api():
     wl = load_watchlist()
@@ -557,11 +561,8 @@ def stock_decision_api(code):
 
 @app.route('/api/predictions/stats')
 def predictions_stats_api():
-    """预测统计: 总体准确率 + 按信号类型 + 按个股"""
-    code = request.args.get('code', '')
-    if code:
-        return jsonify(get_stock_stats(code))
-    return jsonify(get_signal_stats())
+    """次日预测统计（自选股）"""
+    return jsonify(get_nextday_stats())
 
 
 @app.route('/api/predictions/verify', methods=['POST'])
@@ -1479,6 +1480,52 @@ def watchlist_news():
     })
 
 
+@app.route('/api/watchlist/predict')
+def watchlist_predict():
+    """读取今日开盘预测 + 收盘验证 + 次日方向"""
+    today = time.strftime('%Y-%m-%d')
+    intraday_file = os.path.join(DATA_DIR, 'predictions', 'intraday.json')
+    intraday = None
+    if os.path.exists(intraday_file):
+        try:
+            with open(intraday_file, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            if cached.get('date') == today:
+                intraday = cached
+        except:
+            pass
+
+    nd_map = {}
+    try:
+        nd_file = os.path.join(DATA_DIR, 'predictions', 'nextday.json')
+        if os.path.exists(nd_file):
+            with open(nd_file, 'r', encoding='utf-8') as f:
+                for rec in json.load(f):
+                    if rec.get('date') == today:
+                        nd_map[rec['code']] = rec
+    except:
+        pass
+
+    if not intraday:
+        return jsonify({'results': [], 'updated': today, 'status': 'waiting', 'message': '等待09:25开盘预测...'})
+
+    results = []
+    for r in intraday.get('results', []):
+        nd = nd_map.get(r['code'], {})
+        results.append({
+            'code': r['code'], 'market': r.get('market', 'sh'),
+            'name': r.get('name', r['code']),
+            'price': r.get('price', 0), 'change_pct': r.get('change_pct', 0),
+            'pattern': r.get('pattern', '震荡'), 'confidence': r.get('confidence', 50),
+            'reasons': r.get('reasons', []),
+            'verified': r.get('verified', False), 'correct': r.get('correct'),
+            'next_dir': nd.get('direction'), 'next_dir_conf': nd.get('confidence', 0),
+            'gap_pct': r.get('gap_pct', 0),
+        })
+
+    return jsonify({'results': results, 'updated': intraday.get('predicted_at', ''), 'status': 'ready'})
+
+
 @app.route('/api/scan/patterns', methods=['POST'])
 def scan_patterns_api():
     """扫描自选股，识别技术形态/选股模式"""
@@ -1694,6 +1741,32 @@ def scan_market_api():
         'stocks_matched': len(raw),
         'total_scanned': total,
         'candidates': len(candidates),
+    })
+
+
+@app.route('/api/dailypick')
+def dailypick_api():
+    """返回每日一股推荐结果"""
+    period, valid_from, valid_until = get_dailypick_period()
+    cached = None
+    if os.path.exists(DAILYPICK_FILE):
+        try:
+            with open(DAILYPICK_FILE, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+        except:
+            pass
+    if cached and cached.get('status') == 'ready' and cached.get('period') == period:
+        return jsonify({
+            'status': 'ready', 'period': period,
+            'valid_from': valid_from, 'valid_until': valid_until,
+            'pick': cached.get('pick'), 'computed_at': cached.get('computed_at'),
+        })
+    import threading
+    threading.Thread(target=compute_daily_pick, args=(period,), daemon=True).start()
+    return jsonify({
+        'status': 'computing', 'period': period,
+        'valid_from': valid_from, 'valid_until': valid_until,
+        'message': '正在全市场扫描，请10秒后刷新...',
     })
 
 
@@ -1920,7 +1993,350 @@ RECORD_TIMES_15MIN = [
     (9,25),(9,40),(9,55),(10,10),(10,25),(10,40),(10,55),(11,10),(11,25),
     (13,10),(13,25),(13,40),(13,55),(14,10),(14,25),(14,40),(14,55),(15,10),
 ]
-SCHEDULE_TIMES = RECORD_TIMES_15MIN
+SCHEDULE_TIMES = RECORD_TIMES_15MIN + [(15, 1)]  # 15:01 触发明日推荐计算
+_DAILY_PICK_LOCK = threading.Lock()
+
+# ─── 每日一股 ───
+DAILYPICK_FILE = os.path.join(DATA_DIR, 'dailypick.json')
+INTRADAY_FILE = os.path.join(DATA_DIR, 'predictions', 'intraday.json')
+
+def predict_intraday(watchlist, quotes):
+    """09:25 开盘后预测今日走势形态"""
+    today = time.strftime('%Y-%m-%d')
+    from engine.indicators import calc_support_resistance
+    from engine.patterns import scan_patterns
+
+    results = []
+    for s in watchlist:
+        try:
+            code, market = s['code'], s['market']
+            q = quotes.get(code, {})
+            price = q.get('price', 0)
+            if price <= 0:
+                continue
+            yesterday = q.get('yesterdayClose', price)
+            day_open = q.get('open', price)
+            gap_pct = round((day_open - yesterday) / yesterday * 100, 2) if yesterday else 0
+            change_pct = round((price - yesterday) / yesterday * 100, 2) if yesterday else 0
+
+            k = fetch_kline(market + code, 120)
+            if len(k) < 60:
+                continue
+            closes = [x['close'] for x in k]
+            sr = calc_support_resistance(k)
+            pats = scan_patterns({market + code: k})
+            patterns = pats.get(market + code, [])
+            decision = make_decision(closes, k, patterns, sr, None, q, code=code, market=market)
+
+            sig = decision.get('signal', '持有')
+            sc = decision.get('score', 50)
+            details = decision.get('details', {})
+            trend_score = details.get('trend', {}).get('score', 50)
+            capital_score = details.get('capital', {}).get('score', 50)
+            intraday_score = details.get('intraday', {}).get('score', 50)
+
+            pattern = '震荡'
+            confidence = 50
+            reasons = []
+
+            if gap_pct > 1:
+                reasons.append(f'高开{gap_pct}%')
+                if sig in ('买入', '增持'):
+                    pattern = '一直涨'
+                    confidence = min(95, int(sc * 1.2))
+                    reasons.append(f'信号{sig}({sc}分)')
+                else:
+                    pattern = '先涨后跌'
+                    confidence = min(85, int(sc + 30))
+                    reasons.append(f'信号{sig}')
+            elif gap_pct < -1:
+                reasons.append(f'低开{gap_pct}%')
+                if sig in ('买入', '增持'):
+                    pattern = '先跌后涨'
+                    confidence = min(90, int(sc + 10))
+                    reasons.append(f'信号{sig}({sc}分)')
+                else:
+                    pattern = '一直跌'
+                    confidence = min(90, int(sc * 1.3))
+                    reasons.append(f'信号{sig}')
+            else:
+                reasons.append(f'平开{gap_pct}%')
+                if trend_score > 60 and capital_score > 60:
+                    pattern = '一直涨'
+                    confidence = min(80, int((trend_score + capital_score) / 2))
+                    reasons.append(f'趋势↑({trend_score})资金↑({capital_score})')
+                elif trend_score < 40 and capital_score < 40:
+                    pattern = '一直跌'
+                    confidence = min(80, int(100 - (trend_score + capital_score) / 2))
+                    reasons.append(f'趋势↓({trend_score})资金↓({capital_score})')
+                elif trend_score > 50 and intraday_score > 50:
+                    pattern = '先跌后涨'
+                    confidence = 65
+                    reasons.append(f'趋势偏多({trend_score})')
+                elif trend_score < 50 and intraday_score < 50:
+                    pattern = '先涨后跌'
+                    confidence = 65
+                    reasons.append(f'趋势偏空({trend_score})')
+
+            results.append({
+                'code': code, 'market': market, 'name': s.get('name', code),
+                'price': price, 'change_pct': change_pct,
+                'pattern': pattern, 'confidence': int(confidence),
+                'reasons': reasons, 'gap_pct': gap_pct,
+                'signal': sig, 'score': sc,
+                'verified': False, 'correct': None,
+            })
+        except:
+            pass
+
+    payload = {'date': today, 'predicted_at': time.strftime('%H:%M:%S'), 'results': results}
+    os.makedirs(os.path.dirname(INTRADAY_FILE), exist_ok=True)
+    with open(INTRADAY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False)
+    print(f'[intraday] 预测完成: {len(results)} 只')
+    return results
+
+def verify_intraday():
+    """15:01 验证今日开盘预测"""
+    today = time.strftime('%Y-%m-%d')
+    if not os.path.exists(INTRADAY_FILE):
+        return 0
+    try:
+        with open(INTRADAY_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except:
+        return 0
+    if data.get('date') != today:
+        return 0
+
+    verified = 0
+    for r in data.get('results', []):
+        if r.get('verified'):
+            continue
+        code, market = r['code'], r.get('market', 'sh')
+        try:
+            klines = fetch_kline(market + code, 5)
+            if not klines or len(klines) < 2:
+                continue
+            today_k = None
+            for k in klines:
+                if k['date'] == today:
+                    today_k = k
+                    break
+            if not today_k:
+                continue
+            day_open = today_k['open']
+            day_close = today_k['close']
+            day_high = today_k['high']
+            day_low = today_k['low']
+            amplitude = (day_high - day_low) / day_low * 100 if day_low else 0
+
+            if day_close > day_open and amplitude > 1.5:
+                actual = '一直涨'
+            elif day_close < day_open and amplitude > 1.5:
+                actual = '一直跌'
+            elif day_high - day_close > (day_close - day_open) * 1.5:
+                actual = '先涨后跌'
+            elif day_close - day_low > (day_open - day_close) * 1.5:
+                actual = '先跌后涨'
+            else:
+                actual = '震荡'
+
+            r['actual'] = actual
+            r['verified'] = True
+            r['correct'] = (r.get('pattern', '') == actual)
+            verified += 1
+        except:
+            continue
+
+    with open(INTRADAY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    print(f'[intraday] 验证完成: {verified} 只')
+    return verified
+
+def get_dailypick_period():
+    """根据当前时间返回 (period, valid_from, valid_until)"""
+    now = time.localtime()
+    hm = now.tm_hour * 60 + now.tm_min
+    today = time.strftime('%Y-%m-%d')
+    tomorrow_ts = time.mktime(now) + 86400
+    tomorrow = time.strftime('%Y-%m-%d', time.localtime(tomorrow_ts))
+    if hm < 9 * 60 + 25:
+        return 'afternoon', today + ' 15:01', today + ' 09:25'
+    elif hm < 15 * 60 + 1:
+        return 'morning', today + ' 09:25', today + ' 15:01'
+    else:
+        return 'afternoon', today + ' 15:01', tomorrow + ' 09:25'
+
+def compute_daily_pick(period='morning'):
+    """全市场扫描，选出今日/明日推荐的一支最优股票"""
+    if not _DAILY_PICK_LOCK.acquire(blocking=False):
+        print('[dailypick] 计算中，跳过重复请求')
+        return None
+    try:
+        print(f'[dailypick] 开始计算 {period} pick...')
+        stocks = fetch_a_share_list()
+        if not stocks:
+            return None
+        # 过滤涨停、ST、PE 负
+        candidates = [s for s in stocks
+                      if (s.get('change_pct', 0) or 0) < 9.0
+                      and (s.get('pe', 0) or 0) >= 0]
+        # 本地文件 volume 为 0，无法按活跃度排序 → 取代码中间段的股票（主流沪深主板）
+        # 跳过 000xxx-002xxx（深圳主板）前段和 600xxx 前段，取 600200-600999、000400-001999 等区间
+        if candidates and all(c.get('volume', 0) == 0 for c in candidates):
+            import random
+            random.shuffle(candidates)
+            candidates = candidates[:100]  # 减少到 100 只，避免 CPU 打满
+        else:
+            candidates.sort(key=lambda x: abs(x.get('volume', 0) or 0), reverse=True)
+            candidates = candidates[:100]
+        print(f'[dailypick] 候选 {len(candidates)} 只，获取K线...')
+
+        import concurrent.futures
+
+        def fetch_kl(s):
+            try:
+                import signal
+                # 限制单次K线获取 5 秒
+                k = fetch_kline(s['market'] + s['code'], 120)
+                return s, k
+            except:
+                return s, []
+        kline_map = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as exe:
+            for s, k in exe.map(fetch_kl, candidates):
+                if len(k) >= 60:
+                    kline_map[s['code']] = {'info': s, 'kline': k}
+        print(f'[dailypick] K线就绪 {len(kline_map)} 只，获取实时行情...')
+
+        # 批量获取实时行情（用于分时评分）
+        quote_codes = ','.join(f'{v["info"]["market"]}{code}' for code, v in kline_map.items())
+        quotes = fetch_tencent_quote(quote_codes) if quote_codes else {}
+
+        print(f'[dailypick] 行情就绪，计算决策...')
+
+        sector_list = []
+        try:
+            snap_path = os.path.join(DATA_DIR, 'snapshots', 'sectors.json')
+            if os.path.exists(snap_path):
+                sector_list = json.load(open(snap_path)).get('sectors', [])
+        except:
+            pass
+
+        from engine.indicators import calc_support_resistance
+        scored = []
+        for code, item in kline_map.items():
+            try:
+                s = item['info']
+                k = item['kline']
+                closes = [x['close'] for x in k]
+                sr = calc_support_resistance(k)
+                sector_ctx = None
+                for sec in sector_list:
+                    for stk in sec.get('stocks', []):
+                        if stk.get('code') == code and stk.get('market') == s['market']:
+                            sector_ctx = {
+                                'up_count': sec.get('up_count', 0),
+                                'down_count': sec.get('down_count', 0),
+                                'pattern_count': sec.get('pattern_count', 0),
+                                'sector_name': sec.get('name', ''),
+                            }
+                            break
+                    if sector_ctx:
+                        break
+                pats = scan_patterns({s['market'] + code: k})
+                patterns = pats.get(s['market'] + code, [])
+                pattern_names = [p['name'] for p in patterns]
+                # 用最新收盘价作为价格
+                cur_price = closes[-1] if closes else 0
+                cur_chg = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
+                q = quotes.get(code, {}) if isinstance(quotes, dict) else {}
+                decision = make_decision(closes, k, patterns, sr, sector_ctx,
+                                         quote=q, code=code, market=s['market'])
+                # 筛选：排除涨停
+                if cur_chg < 9.0:
+                    agree = sum(1 for d in decision.get('details', {}).values()
+                                if d.get('score', 0) >= 60)
+                    scored.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'price': cur_price, 'change_pct': round(cur_chg, 2),
+                        'signal': decision['signal'], 'score': decision['score'],
+                        'details': decision.get('details', {}),
+                        'reasons': decision.get('reasons', []),
+                        'patterns_found': pattern_names,
+                        'method_agree': agree, 'total_methods': 7,
+                        'sr': sr,
+                    })
+            except:
+                pass
+
+        if not scored:
+            print('[dailypick] 无符合条件的股票')
+            return None
+
+        # 排序: score 降序, 优先买入信号, method_agree 降序
+        scored.sort(key=lambda r: (-r['score'], r['signal'] != '买入', -r['method_agree']))
+        best = scored[0]
+        # 确保前5名没有接近涨停的
+        for b in scored[:5]:
+            if b['change_pct'] < 8.5:
+                best = b
+                break
+
+        if best['score'] < 55:
+            print(f'[dailypick] 最高分仅 {best["score"]}，不值得推荐')
+            return None
+
+        pick = {
+            'code': best['code'], 'market': best['market'], 'name': best['name'],
+            'price': best['price'], 'change_pct': best['change_pct'],
+            'signal': best['signal'], 'score': best['score'],
+            'method_agree': best['method_agree'],
+            'total_methods': best['total_methods'],
+            'details': {},
+            'top_reasons': best['reasons'][:5],
+            'patterns_found': best['patterns_found'],
+            'risk_warning': '',
+            'sr': best['sr'],
+        }
+        for key, val in best['details'].items():
+            s = val.get('score', 50)
+            sig = '买入' if s >= 75 else '增持' if s >= 60 else '持有' if s >= 45 else '卖出'
+            pick['details'][key] = {'score': s, 'signal': sig, 'reasons': val.get('reasons', [])}
+
+        risk_parts = []
+        if best['change_pct'] > 7:
+            risk_parts.append(f'涨幅较大({best["change_pct"]}%)')
+        if best['method_agree'] < 4:
+            risk_parts.append('方法分歧较大')
+        pick['risk_warning'] = '；'.join(risk_parts) if risk_parts else ''
+
+        now_ts = time.time()
+        if period == 'morning':
+            valid_from = time.strftime('%Y-%m-%d') + ' 09:25'
+            valid_until = time.strftime('%Y-%m-%d') + ' 15:01'
+        else:
+            valid_from = time.strftime('%Y-%m-%d') + ' 15:01'
+            valid_until = time.strftime('%Y-%m-%d', time.localtime(now_ts + 86400)) + ' 09:25'
+
+        payload = {
+            'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
+            'status': 'ready', 'pick': pick,
+            'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        os.makedirs(os.path.dirname(DAILYPICK_FILE), exist_ok=True)
+        with open(DAILYPICK_FILE, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        print(f'[dailypick] {period} pick -> {best["name"]}({best["code"]}) score={best["score"]}')
+        return payload
+    except Exception as e:
+        print(f'[dailypick] 计算失败: {e}')
+        import traceback; traceback.print_exc()
+        return None
+    finally:
+        _DAILY_PICK_LOCK.release()
+
 _SCHEDULER_RUNNING = False
 
 def _save_snapshot(name, data):
@@ -2062,6 +2478,47 @@ def _run_scheduled_scans():
             print(f'[scheduler] 预测验证: {vcount} 条, 追踪更新: {tcount} 条')
         except Exception as e:
             print(f'[scheduler] 验证失败: {e}')
+
+    # 5. 每日一股计算（仅 09:25 和 15:01 触发，避免重算导致CPU打满）
+    hm = (now.tm_hour, now.tm_min)
+    if hm in ((9, 25), (15, 1)):
+        # 检查是否已算过（避免多次触发）
+        if os.path.exists(DAILYPICK_FILE):
+            try:
+                with open(DAILYPICK_FILE) as f:
+                    cached = json.load(f)
+                if cached.get('period') == ('morning' if hm == (9,25) else 'afternoon'):
+                    print(f'[scheduler] 每日一股已存在，跳过')
+                    hm = None  # 标记已处理
+            except:
+                pass
+        if hm:  # 需要重新计算
+            period = 'morning' if hm == (9,25) else 'afternoon'
+            print(f'[scheduler] 触发 每日一股({period})...')
+            threading.Thread(target=compute_daily_pick, args=(period,), daemon=True).start()
+
+    # 6. 今日走势预测(09:25) + 收盘验证+次日预测(15:01)
+    hm = (now.tm_hour, now.tm_min)
+    if hm == (9, 25):
+        wl = load_watchlist()
+        if wl:
+            codes_str = ','.join([s['market'] + s['code'] for s in wl])
+            quotes = fetch_tencent_quote(codes_str) if codes_str else {}
+            threading.Thread(target=predict_intraday, args=(wl, quotes), daemon=True).start()
+    elif hm == (15, 1):
+        threading.Thread(target=verify_intraday, daemon=True).start()
+        wl = load_watchlist()
+        if wl:
+            try:
+                ncount = record_nextday_prediction(wl, fetch_kline)
+                print(f'[scheduler] 次日预测记录: {ncount} 只')
+            except Exception as e:
+                print(f'[scheduler] 次日预测记录失败: {e}')
+        try:
+            vcount = verify_nextday_predictions(fetch_kline)
+            print(f'[scheduler] 次日预测验证: {vcount} 条')
+        except Exception as e:
+            print(f'[scheduler] 次日预测验证失败: {e}')
 
     print(f'[scheduler] 扫描完成')
 

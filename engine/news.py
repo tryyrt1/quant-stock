@@ -1,55 +1,51 @@
 """新闻采集与简单情感分析"""
-import requests
-import re
+import time
 import json
+import re
 
 NEWS_CACHE = {}
+CACHE_TTL = 300  # 5分钟缓存
+
+def _clean_title(text):
+    """去除 East Money 搜索结果中的 <em> 高亮标签和空白"""
+    text = re.sub(r'<[^>]+>', '', text)
+    return text.strip()
+
+NEWS_CACHE = {}
+CACHE_TTL = 300  # 5分钟缓存
 
 def fetch_news(code, market='sh'):
-    """获取股票相关新闻(东方财富)"""
-    secid = '0.' + code if market == 'sz' else '1.' + code
-    url = f'https://push2.eastmoney.com/api/qt/stock/news/get?secid={secid}&count=20'
+    """获取股票相关新闻(东方财富 search API)，带5分钟缓存"""
+    cache_key = f'{code}_{market}'
+    now = time.time()
+    cached = NEWS_CACHE.get(cache_key)
+    if cached and now - cached['ts'] < CACHE_TTL:
+        return cached['data']
+
     try:
-        r = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
-        data = r.json()
-        items = data.get('data', []) if isinstance(data, dict) else []
+        import akshare as ak
+        df = ak.stock_news_em(symbol=code)
         results = []
-        for item in items[:15]:
-            title = item.get('title', item.get('art', '')) if isinstance(item, dict) else str(item)
+        for _, row in df.head(15).iterrows():
             results.append({
-                'title': title,
-                'source': item.get('source', '财经媒体') if isinstance(item, dict) else '东方财富',
-                'time': item.get('date', '') if isinstance(item, dict) else '',
+                'title': _clean_title(row.get('新闻标题', '')),
+                'source': row.get('文章来源', '财经媒体'),
+                'time': str(row.get('发布时间', '')),
             })
+        NEWS_CACHE[cache_key] = {'ts': now, 'data': results}
         return results
-    except:
-        return _mock_news(code, market)
-
-
-def _mock_news(code, market):
-    """当API不可用时返回模拟新闻"""
-    import random
-    headlines = [
-        f"公司{code}签署重大战略合作协议，布局新业务领域",
-        "行业政策利好，板块整体走强",
-        f"{code}发布业绩预告，净利润同比增长",
-        "券商研报：看好该股长期投资价值",
-        "公司公告：获得重要专利授权",
-        "市场分析：行业景气度持续提升",
-        f"{code}获机构集中调研，关注业务进展",
-        "产业资本增持，彰显发展信心",
-        "行业迎来政策窗口期，龙头受益明显",
-        f"{code}新技术突破，市场前景广阔",
-    ]
-    return [{'title': random.choice(headlines), 'source': '模拟数据', 'time': '今日'} for _ in range(5)]
+    except Exception:
+        return []  # 无数据时不返回模拟数据，前端显示为空
 
 
 def analyze_sentiment(news_list):
     """简单情感分析 - 基于关键词"""
     pos_words = ['利好', '增长', '突破', '增持', '受益', '看好', '提升', '战略合作',
-                 '盈利', '龙头', '领先', '新高', '获批', '提振', '超预期']
+                 '盈利', '龙头', '领先', '新高', '获批', '提振', '超预期',
+                 '净利', '走强', '流入', '上涨', '涨幅', '升']
     neg_words = ['减持', '亏损', '下跌', '风险', '利空', '处罚', '诉讼', '违约',
-                 '下调', '预警', 'st', '退市', '立案', '调查', '跌停']
+                 '下调', '预警', 'st', '退市', '立案', '调查', '跌停',
+                 '流出', '跌幅', '回落', '承压', '疲软', '下滑']
 
     total_score = 0
     if not news_list:

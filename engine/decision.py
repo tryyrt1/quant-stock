@@ -76,8 +76,9 @@ def assess_patterns(patterns):
     reasons = []
     bullish_keys = {"golden_cross", "obv_breakout", "obv_consecutive",
                     "obv_bullish", "consecutive_up", "one_limitup",
-                    "pre_breakout", "long_shadow", "low_vol_surge"}
-    bearish_keys = {"oversold"}  # 超跌偏中性, 可能是机会也可能是风险
+                    "pre_breakout", "long_shadow", "low_vol_surge",
+                    "biasvol_buy", "vp_confirm"}
+    bearish_keys = {"oversold", "vp_divergence"}  # vp_divergence=量价背离,风险信号
 
     for p in patterns:
         key = p.get("key", "")
@@ -420,7 +421,107 @@ def assess_intraday(quote, closes, klines=None, hour=None, minute=None):
     return max(0, min(100, score)), reasons
 
 
-def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None):
+def score_to_signal(score):
+    """将0-100分数映射为买卖信号"""
+    if score >= 75: return "买入"
+    if score >= 60: return "增持"
+    if score >= 45: return "持有"
+    if score >= 30: return "减仓"
+    return "卖出"
+
+
+def assess_capital_flow(code, market):
+    """主力资金评分 (0-100) — 基于东方财富资金流数据"""
+    if not code:
+        return 50, ["暂无资金数据"]
+
+    secid = "1." + code if market == "sh" else "0." + code
+    url = ("http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?"
+           f"secid={secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,"
+           f"f55,f56,f57,f58,f59,f60,f61,f62,f63")
+
+    try:
+        import requests
+        r = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        data = r.json()
+        raw_klines = (data.get("data") or {}).get("klines") or []
+        if not raw_klines:
+            return 50, ["暂无资金数据"]
+    except Exception:
+        return 50, ["资金数据获取失败"]
+
+    records = []
+    for k in raw_klines[:10]:
+        parts = k.split(",")
+        if len(parts) >= 13:
+            records.append({
+                "date": parts[0],
+                "main_net": float(parts[1]),   # 主力净流入(元)
+                "super_large": float(parts[2]), # 超大单净流入
+                "large": float(parts[3]),       # 大单净流入
+                "main_pct": float(parts[6]),    # 主力净占比(%)
+            })
+
+    if not records:
+        return 50, ["资金数据格式异常"]
+
+    score = 50
+    reasons = []
+    latest = records[0]
+    recent = records[:min(5, len(records))]
+
+    # 1. 当日主力净流入额
+    main_wan = latest["main_net"] / 1e4
+    if main_wan > 5000:
+        score += 15
+        reasons.append(f"主力净流入{main_wan:.0f}万")
+    elif main_wan > 1000:
+        score += 8
+        reasons.append(f"主力小幅流入{main_wan:.0f}万")
+    elif main_wan < -5000:
+        score -= 15
+        reasons.append(f"主力大幅流出{abs(main_wan):.0f}万")
+    elif main_wan < -1000:
+        score -= 8
+        reasons.append(f"主力小幅流出{abs(main_wan):.0f}万")
+
+    # 2. 累计 N 日净流向
+    total_wan = sum(r["main_net"] for r in recent) / 1e4
+    if total_wan > 10000 and len(recent) >= 3:
+        score += 10
+        reasons.append(f"{len(recent)}日累计净流入{total_wan:.0f}万")
+    elif total_wan < -10000 and len(recent) >= 3:
+        score -= 10
+        reasons.append(f"{len(recent)}日累计净流出{abs(total_wan):.0f}万")
+
+    # 3. 连续净流入/流出天数
+    same_dir = 1
+    for i in range(len(records) - 1):
+        if records[i]["main_net"] * records[i + 1]["main_net"] > 0:
+            same_dir += 1
+        else:
+            break
+    if latest["main_net"] > 0 and same_dir >= 3:
+        score += 8
+        reasons.append(f"主力连续{same_dir}日净流入")
+    elif latest["main_net"] < 0 and same_dir >= 3:
+        score -= 8
+        reasons.append(f"主力连续{same_dir}日净流出")
+
+    # 4. 主力净占比
+    mpct = latest["main_pct"]
+    if mpct > 8:
+        score += 7
+        reasons.append(f"主力净占比{mpct:.1f}%")
+    elif mpct < -8:
+        score -= 7
+        reasons.append(f"主力净占比{mpct:.1f}%(流出)")
+
+    score = max(0, min(100, score))
+    return score, reasons
+
+
+def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, code=None, market=None):
     """综合决策 — 返回明确买卖信号
     quote: 可选，传入实时行情数据用于分时评分
     """
@@ -430,14 +531,16 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None):
     vol_score, vol_reasons = assess_volume(closes, klines)
     sector_score, sector_reasons = assess_sector(sector_ctx)
     intraday_score, intraday_reasons = assess_intraday(quote, closes, klines)
+    capital_score, capital_reasons = assess_capital_flow(code, market)
 
     weights = {
-        "trend": 0.28,
-        "patterns": 0.22,
-        "price_level": 0.18,
+        "trend": 0.23,
+        "patterns": 0.17,
+        "price_level": 0.15,
         "volume": 0.08,
-        "sector": 0.14,
+        "sector": 0.10,
         "intraday": 0.10,
+        "capital": 0.17,
     }
 
     total = (
@@ -447,35 +550,33 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None):
         + vol_score * weights["volume"]
         + sector_score * weights["sector"]
         + intraday_score * weights["intraday"]
+        + capital_score * weights["capital"]
     )
     total = round(max(0, min(100, total)), 1)
 
     # 信号映射
-    if total >= 75:
-        signal = "买入"
-        sub = "强烈建议买入"
-        color = "#ff4757"
-    elif total >= 60:
-        signal = "增持"
-        sub = "可逢低加仓"
-        color = "#ff6b81"
-    elif total >= 45:
-        signal = "持有"
-        sub = "继续持有观察"
-        color = "#00d2ff"
-    elif total >= 30:
-        signal = "减仓"
-        sub = "考虑逐步减仓"
-        color = "#ffa502"
-    else:
-        signal = "卖出"
-        sub = "建议离场回避"
-        color = "#2ed573"
+    signal = score_to_signal(total)
+    sub_map = {"买入": "强烈建议买入", "增持": "可逢低加仓", "持有": "继续持有观察", "减仓": "考虑逐步减仓", "卖出": "建议离场回避"}
+    color_map = {"买入": "#ff4757", "增持": "#ff6b81", "持有": "#00d2ff", "减仓": "#ffa502", "卖出": "#2ed573"}
+    sub = sub_map.get(signal, "继续持有观察")
+    color = color_map.get(signal, "#00d2ff")
+
+    # 各方法独立信号
+    method_signals = {
+        "trend": {"score": trend_score, "signal": score_to_signal(trend_score)},
+        "patterns": {"score": pat_score, "signal": score_to_signal(pat_score)},
+        "price_level": {"score": level_score, "signal": score_to_signal(level_score)},
+        "volume": {"score": vol_score, "signal": score_to_signal(vol_score)},
+        "sector": {"score": sector_score, "signal": score_to_signal(sector_score)},
+        "intraday": {"score": intraday_score, "signal": score_to_signal(intraday_score)},
+        "capital": {"score": capital_score, "signal": score_to_signal(capital_score)},
+    }
 
     # 汇总理由 (每个维度取前2条)
     all_reasons = []
     seen = set()
-    for r in trend_reasons + pat_reasons + level_reasons + vol_reasons + sector_reasons:
+    for r in (trend_reasons + pat_reasons + level_reasons + vol_reasons
+              + sector_reasons + capital_reasons):
         if r not in seen:
             seen.add(r)
             all_reasons.append(r)
@@ -492,6 +593,8 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None):
             "volume": {"score": vol_score, "reasons": vol_reasons, "weight": weights["volume"]},
             "sector": {"score": sector_score, "reasons": sector_reasons, "weight": weights["sector"]},
             "intraday": {"score": intraday_score, "reasons": intraday_reasons, "weight": weights["intraday"]},
+            "capital": {"score": capital_score, "reasons": capital_reasons, "weight": weights["capital"]},
         },
+        "method_signals": method_signals,
         "reasons": all_reasons[:10] + intraday_reasons[:3],
     }

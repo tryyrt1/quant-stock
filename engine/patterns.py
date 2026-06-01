@@ -1,5 +1,5 @@
 """量选股模式识别 - 基于K线数据的形态扫描"""
-from .indicators import calc_ma, calc_rsi, calc_macd, check_golden_cross, check_macd_gc
+from .indicators import calc_ma, calc_rsi, calc_macd, check_golden_cross, check_macd_gc, calc_biasvol, calc_vp_correlation
 
 def _safe_close(klines):
     return [k['close'] for k in klines]
@@ -608,6 +608,98 @@ def pattern_low_vol_surge(klines, lookback=60, vol_mult=1.8):
     }
 
 
+def pattern_biasvol_buy(klines, period=20, threshold=3.0):
+    """BIASVOL买入信号: BIASVOL < -threshold (成交量放大的超卖)
+    BIASVOL = BIAS * (vol/avg_vol), 当BIASVOL < -阈值表示放量超卖,是买入信号
+    研究数据: BIASVOL是A股最有效因子(IC 0.0749),远优于普通BIAS
+    """
+    if len(klines) < period + 10:
+        return False, {}
+    closes = _safe_close(klines)
+    vols = _safe_vol(klines)
+    bv = calc_biasvol(closes, vols, period)
+    if not bv or len(bv) < 3:
+        return False, {}
+    # 检查最新值
+    cur_bv = bv[-1]
+    if cur_bv is None or cur_bv >= -threshold:
+        return False, {}
+    # 确认最近有放量（最后一根K线量 >= 20日均量）
+    vol20 = sum(vols[-20:]) / 20
+    if vol20 <= 0 or vols[-1] < vol20:
+        return False, {}
+    # 价格必须是下跌的（确认超卖）
+    price_chg = (closes[-1] - closes[-3]) / closes[-3] * 100 if len(closes) >= 4 else 0
+    if price_chg > 0:
+        return False, {}
+    # BIASVOL还在继续下降（加速赶底）
+    bv_trend = bv[-1] - bv[-3] if len(bv) >= 4 and bv[-3] is not None else 0
+    return True, {
+        'biasvol': round(cur_bv, 2),
+        'vol_ratio': round(vols[-1] / vol20, 2),
+        'price_chg': round(price_chg, 2),
+        'bv_trend': round(bv_trend, 2),
+        'label': f'BIASVOL放量超卖 (BV={cur_bv:.2f}<-{threshold}, 量比{vols[-1]/vol20:.1f}x, 近3日跌{price_chg:.1f}%)'
+    }
+
+
+def pattern_vp_confirm(klines, period=20, min_corr=0.5):
+    """量价共振: 量价相关性>阈值 + 股价上涨 (量价同步确认上升趋势)
+    研究数据: 量价相关性IR 0.5975,是A股最稳定的选股因子
+    量价同步上涨=趋势健康, 量价背离=趋势可能反转
+    """
+    if len(klines) < period + 10:
+        return False, {}
+    closes = _safe_close(klines)
+    vols = _safe_vol(klines)
+    corrs = calc_vp_correlation(closes, vols, period)
+    if not corrs or len(corrs) < 1:
+        return False, {}
+    cur_corr = corrs[-1]
+    if cur_corr is None or cur_corr < min_corr:
+        return False, {}
+    # 股价短期上涨（确认上升趋势）
+    chg_5d = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 7 else 0
+    if chg_5d < 1:
+        return False, {}
+    # 好: 正相关+价格上涨=趋势健康
+    vol_trend = sum(vols[-5:]) / sum(vols[-10:-5]) if sum(vols[-10:-5]) > 0 else 1
+    return True, {
+        'vp_corr': round(cur_corr, 3),
+        'chg_5d': round(chg_5d, 2),
+        'vol_trend': round(vol_trend, 2),
+        'label': f'量价共振(r={cur_corr:.2f}, 5日涨{chg_5d:.1f}%, 量比{vol_trend:.2f}x)'
+    }
+
+
+def pattern_vp_divergence(klines, period=20, max_corr=-0.3):
+    """量价背离: 量价相关性<阈值 + 股价上涨 (量价背离=上涨乏力)
+    量在价先: 价格创新高但量价相关性转负=主力出货
+    """
+    if len(klines) < period + 10:
+        return False, {}
+    closes = _safe_close(klines)
+    vols = _safe_vol(klines)
+    corrs = calc_vp_correlation(closes, vols, period)
+    if not corrs or len(corrs) < 1:
+        return False, {}
+    cur_corr = corrs[-1]
+    if cur_corr is None or cur_corr > max_corr:
+        return False, {}
+    # 股价短期上涨（表面上还在涨,但量价已背离）
+    chg_5d = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 7 else 0
+    if chg_5d < 2:
+        return False, {}
+    # 成交量在萎缩
+    vol_shrink = sum(vols[-5:]) < sum(vols[-10:-5]) * 0.8 if len(vols) >= 15 else False
+    return True, {
+        'vp_corr': round(cur_corr, 3),
+        'chg_5d': round(chg_5d, 2),
+        'vol_shrink': vol_shrink,
+        'label': f'量价背离(r={cur_corr:.2f}, 涨{chg_5d:.1f}%但量价不同步)'
+    }
+
+
 # 所有模式列表: (name, display_name, func)
 ALL_PATTERNS = [
     ('consecutive_up', '连续上攻', pattern_consecutive_up),
@@ -621,6 +713,9 @@ ALL_PATTERNS = [
     ('oversold', '超跌筛选', pattern_oversold),
     ('one_limitup', '首板涨停', pattern_one_limitup),
     ('pre_breakout', '潜在翻倍', pattern_pre_breakout),
+    ('biasvol_buy', 'BIASVOL放量超卖', pattern_biasvol_buy),
+    ('vp_confirm', '量价共振', pattern_vp_confirm),
+    ('vp_divergence', '量价背离', pattern_vp_divergence),
 ]
 
 def scan_patterns(klines_all):

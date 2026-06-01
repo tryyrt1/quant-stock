@@ -55,7 +55,7 @@ def is_record_time(hour, minute):
     return False
 
 
-def record_prediction(code, market, name, signal, score, price, record_time=None):
+def record_prediction(code, market, name, signal, score, price, record_time=None, methods=None):
     """记录一条预测（同一股票+同日+同时段去重）
     自动检测信号变化（与前一个时间点对比），存入 signal_change 字段
     record_time: 可选，指定记录时间，不指定则用当前时间
@@ -100,6 +100,8 @@ def record_prediction(code, market, name, signal, score, price, record_time=None
             }
             if signal_change:
                 data[i]["signal_change"] = signal_change
+            if methods:
+                data[i]["methods"] = methods
             _save(data)
             return
 
@@ -111,6 +113,8 @@ def record_prediction(code, market, name, signal, score, price, record_time=None
     }
     if signal_change:
         new_record["signal_change"] = signal_change
+    if methods:
+        new_record["methods"] = methods
     data.append(new_record)
     _save(data)
 
@@ -183,6 +187,10 @@ def verify_predictions(fetch_kline_func):
             if len(track) < 2:
                 continue
 
+            # 当日（分时）涨跌幅: 预测价 → 当日收盘价
+            same_day_close = klines[pred_idx]["close"]
+            same_day_change_pct = (same_day_close - pred_price) / pred_price * 100 if pred_price > 0 else 0
+
             next_close = track[1]["close"]
             change_pct = (next_close - pred_price) / pred_price * 100
 
@@ -200,7 +208,30 @@ def verify_predictions(fetch_kline_func):
             r["verified"] = True
             r["verify_date"] = today
             r["verify_track"] = track
+            r["same_day_change_pct"] = round(same_day_change_pct, 2)  # 当日分时验证
             verified_count += 1
+
+            # 验证各独立方法（共用同一个 change_pct）
+            methods = r.get("methods", {})
+            if methods:
+                verified_methods = {}
+                for mkey, minfo in methods.items():
+                    # 保留原始 score/signal，补充 verified/correct
+                    orig_score = minfo.get("score", 50)
+                    orig_signal = minfo.get("signal", "持有")
+                    if orig_signal in ("买入", "增持"):
+                        mcorrect = change_pct > 0
+                    elif orig_signal in ("卖出", "减仓"):
+                        mcorrect = change_pct < 0
+                    else:
+                        mcorrect = None
+                    verified_methods[mkey] = {
+                        "score": orig_score,
+                        "signal": orig_signal,
+                        "verified": True,
+                        "correct": mcorrect,
+                    }
+                r["methods"] = verified_methods
 
         except:
             continue
@@ -355,6 +386,7 @@ def get_recent_results(days=7):
                 "correct": r.get("correct"),
                 "verify_track": r.get("verify_track", []),
                 "signal_change": r.get("signal_change"),
+                "methods": r.get("methods", {}),
             })
         for s in stocks.values():
             s["records"].sort(key=lambda x: x.get("time", ""))
@@ -439,4 +471,470 @@ def get_signal_performance():
         "by_signal": result,
         "today_changes": signal_changes,
         "total_verified": sum(1 for r in verified if r.get("verified")),
+    }
+
+
+def auto_diagnose():
+    """自动回测诊断: 分析已验证预测，找出最准的信号方法并给出建议"""
+    data = _load()
+    # 只取已验证的记录
+    verified = [r for r in data if r.get("verified") and r.get("correct") is not None]
+
+    if not verified:
+        return {
+            "status": "no_data",
+            "message": "暂无已验证数据，需等待至少一个交易日的验证周期",
+            "signals": [],
+            "best_signal": None,
+            "worst_signal": None,
+            "recommendations": ["等待数据积累，至少需要一个交易日后才能生成诊断报告"],
+            "total_samples": 0,
+        }
+
+    # 按信号统计
+    sig_stats = {}
+    for r in verified:
+        sig = r.get("signal", "未知")
+        if sig not in sig_stats:
+            sig_stats[sig] = {"correct": 0, "total": 0, "returns": []}
+        sig_stats[sig]["total"] += 1
+        sig_stats[sig]["returns"].append(r.get("next_change_pct", 0))
+        if r["correct"]:
+            sig_stats[sig]["correct"] += 1
+
+    # 按股票统计
+    stock_stats = {}
+    for r in verified:
+        code = r.get("code", "")
+        name = r.get("name", code)
+        if code not in stock_stats:
+            stock_stats[code] = {"code": code, "name": name, "correct": 0, "total": 0, "returns": []}
+        stock_stats[code]["total"] += 1
+        stock_stats[code]["returns"].append(r.get("next_change_pct", 0))
+        if r["correct"]:
+            stock_stats[code]["correct"] += 1
+
+    # 构建信号分析结果
+    signals = []
+    for sig, s in sig_stats.items():
+        avg_ret = sum(s["returns"]) / len(s["returns"]) if s["returns"] else 0
+        win_rate = round(s["correct"] / s["total"] * 100, 1) if s["total"] > 0 else 0
+        signals.append({
+            "signal": sig,
+            "accuracy": win_rate,
+            "correct": s["correct"],
+            "total": s["total"],
+            "avg_return": round(avg_ret, 2),
+        })
+
+    signals.sort(key=lambda x: x["accuracy"], reverse=True)
+
+    # 找出最佳和最差
+    best = signals[0] if signals else None
+    worst = signals[-1] if len(signals) > 1 else None
+
+    # 按股票分析准确率
+    stocks_rank = []
+    for code, s in stock_stats.items():
+        win_rate = round(s["correct"] / s["total"] * 100, 1) if s["total"] > 0 else 0
+        avg_ret = sum(s["returns"]) / len(s["returns"]) if s["returns"] else 0
+        stocks_rank.append({
+            "code": s["code"],
+            "name": s["name"],
+            "accuracy": win_rate,
+            "correct": s["correct"],
+            "total": s["total"],
+            "avg_return": round(avg_ret, 2),
+        })
+    stocks_rank.sort(key=lambda x: x["accuracy"], reverse=True)
+
+    # 生成建议
+    recommendations = []
+    if best and best["accuracy"] >= 55:
+        recommendations.append(
+            f"✅ 最佳信号「{best['signal']}」胜率{best['accuracy']}%，"
+            f"均收益{best['avg_return']:+.2f}%（{best['total']}样本），建议优先参考"
+        )
+    elif best and best["accuracy"] >= 45:
+        recommendations.append(
+            f"📊 最佳信号「{best['signal']}」胜率{best['accuracy']}%，"
+            f"效果中等，建议结合大盘环境使用"
+        )
+    else:
+        recommendations.append(
+            f"📈 当前样本有限（共{len(verified)}条），最佳信号胜率{best['accuracy'] if best else 0}%，"
+            f"需要更多数据积累才能可靠评估"
+        )
+
+    if worst and worst != best and worst["accuracy"] < 45:
+        recommendations.append(
+            f"⚠️ 信号「{worst['signal']}」胜率仅{worst['accuracy']}%，"
+            f"均收益{worst['avg_return']:+.2f}%（{worst['total']}样本），建议谨慎使用"
+        )
+
+    # 总体统计
+    all_returns = [r.get("next_change_pct", 0) for r in verified if r.get("next_change_pct") is not None]
+    total_correct = sum(1 for r in verified if r["correct"])
+    total_samples = len(verified)
+    overall_acc = round(total_correct / total_samples * 100, 1) if total_samples > 0 else 0
+    overall_avg_ret = round(sum(all_returns) / len(all_returns), 2) if all_returns else 0
+
+    # 按日期统计趋势
+    daily = {}
+    for r in sorted(verified, key=lambda x: x.get("date", "")):
+        d = r.get("date", "")
+        if d not in daily:
+            daily[d] = {"correct": 0, "total": 0}
+        daily[d]["total"] += 1
+        if r["correct"]:
+            daily[d]["correct"] += 1
+    daily_trend = []
+    for d, s in daily.items():
+        daily_trend.append({
+            "date": d,
+            "accuracy": round(s["correct"] / s["total"] * 100, 1) if s["total"] > 0 else 0,
+            "correct": s["correct"],
+            "total": s["total"],
+        })
+
+    return {
+        "status": "ok",
+        "total_samples": total_samples,
+        "total_correct": total_correct,
+        "overall_accuracy": overall_acc,
+        "overall_avg_return": overall_avg_ret,
+        "best_signal": best,
+        "worst_signal": worst if worst != best else None,
+        "signals": signals,
+        "top_stocks": stocks_rank[:10],
+        "worst_stocks": stocks_rank[-5:] if len(stocks_rank) > 5 else [],
+        "daily_trend": daily_trend[-10:],
+        "recommendations": recommendations,
+        "message": f"基于{total_samples}条已验证预测的分析报告（准确率{overall_acc}%，均收益{overall_avg_ret:+.2f}%）",
+    }
+
+
+METHOD_NAMES = {
+    "trend": "趋势法",
+    "patterns": "形态法",
+    "price_level": "价位法",
+    "volume": "量能法",
+    "sector": "板块法",
+    "intraday": "分时法",
+    "capital": "资金法",
+}
+
+
+def get_method_multi_offset_stats():
+    """统计各方法在不同时间偏移上的准确率
+    偏移: 0=当日分时, 1=+1日, 2=+2日, 3=+3日, 5=+5日, 10=+10日, 15=+15日, 20=+20日, 30=+30日
+    返回: {method_key: {name, offset: {accuracy, correct, total, avg_return}}}
+    """
+    data = _load()
+    # 只取已验证且含 methods 的记录
+    records = [r for r in data if r.get("verified") and r.get("methods") and r.get("verify_track")]
+
+    offsets = [0, 1, 2, 3, 5, 10, 15, 20, 30]
+
+    # 初始化统计
+    stats = {}
+    for mkey in METHOD_NAMES:
+        stats[mkey] = {"name": METHOD_NAMES[mkey], "total_records": 0}
+        for o in offsets:
+            stats[mkey][o] = {"correct": 0, "total": 0, "returns": []}
+
+    for r in records:
+        methods = r.get("methods", {})
+        track = r.get("verify_track", [])
+        pred_price = track[0]["close"] if track else 0
+        same_day_pct = r.get("same_day_change_pct")
+
+        if pred_price <= 0:
+            continue
+
+        for mkey, minfo in methods.items():
+            if mkey not in stats:
+                continue
+            # 只统计已验证的方法
+            if not minfo.get("verified"):
+                continue
+            stats[mkey]["total_records"] += 1
+            msig = minfo.get("signal", "持有")
+
+            for o in offsets:
+                if o == 0:
+                    # 当日分时: 使用 same_day_change_pct
+                    if same_day_pct is not None:
+                        ret = same_day_pct
+                    else:
+                        continue
+                else:
+                    # 从 verify_track 取对应偏移
+                    if len(track) > o:
+                        ret = (track[o]["close"] - pred_price) / pred_price * 100
+                    else:
+                        continue
+
+                # 持有/中性信号不纳入准确率统计（避免分母膨胀）
+                if msig not in ("买入", "增持", "卖出", "减仓"):
+                    continue
+
+                stats[mkey][o]["returns"].append(ret)
+                stats[mkey][o]["total"] += 1
+
+                if msig in ("买入", "增持"):
+                    if ret > 0:
+                        stats[mkey][o]["correct"] += 1
+                elif msig in ("卖出", "减仓"):
+                    if ret < 0:
+                        stats[mkey][o]["correct"] += 1
+
+    # 格式化结果
+    result = {}
+    for mkey, sdata in stats.items():
+        if sdata["total_records"] == 0:
+            continue
+        mresult = {"name": sdata["name"], "total_records": sdata["total_records"], "offsets": {}}
+        for o in offsets:
+            odata = sdata[o]
+            if odata["total"] == 0:
+                continue
+            avg_ret = sum(odata["returns"]) / len(odata["returns"])
+            accuracy = round(odata["correct"] / odata["total"] * 100, 1) if odata["total"] > 0 else 0
+            mresult["offsets"][o] = {
+                "accuracy": accuracy,
+                "correct": odata["correct"],
+                "total": odata["total"],
+                "avg_return": round(avg_ret, 2),
+            }
+        if mresult["offsets"]:
+            result[mkey] = mresult
+
+    # 添加综合法（复合信号）的对比
+    composite = {"name": "综合法", "total_records": 0, "offsets": {}}
+    verified_all = [r for r in data if r.get("verified") and r.get("verify_track") and r.get("correct") is not None]
+    for r in verified_all:
+        track = r.get("verify_track", [])
+        pred_price = track[0]["close"] if track else 0
+        same_day_pct = r.get("same_day_change_pct")
+        if pred_price <= 0:
+            continue
+        signal = r.get("signal", "持有")
+        composite["total_records"] += 1
+        for o in offsets:
+            if o == 0:
+                if same_day_pct is not None:
+                    ret = same_day_pct
+                else:
+                    continue
+            else:
+                if len(track) > o:
+                    ret = (track[o]["close"] - pred_price) / pred_price * 100
+                else:
+                    continue
+            if o not in composite["offsets"]:
+                composite["offsets"][o] = {"correct": 0, "total": 0, "returns": []}
+            composite["offsets"][o]["returns"].append(ret)
+            composite["offsets"][o]["total"] += 1
+            if signal in ("买入", "增持"):
+                if ret > 0:
+                    composite["offsets"][o]["correct"] += 1
+            elif signal in ("卖出", "减仓"):
+                if ret < 0:
+                    composite["offsets"][o]["correct"] += 1
+    if composite["total_records"] > 0:
+        co_result = {"name": "综合法", "total_records": composite["total_records"], "offsets": {}}
+        for o, odata in composite["offsets"].items():
+            if odata["total"] == 0:
+                continue
+            avg_ret = sum(odata["returns"]) / len(odata["returns"])
+            accuracy = round(odata["correct"] / odata["total"] * 100, 1) if odata["total"] > 0 else 0
+            co_result["offsets"][o] = {
+                "accuracy": accuracy,
+                "correct": odata["correct"],
+                "total": odata["total"],
+                "avg_return": round(avg_ret, 2),
+            }
+        if co_result["offsets"]:
+            result["composite"] = co_result
+
+    return result
+
+
+def get_stock_method_snapshot(code):
+    """返回指定股票最新预测记录的 methods 快照 + 多偏移统计"""
+    data = _load()
+    records = [r for r in data if r.get("code") == code and r.get("methods")]
+    if not records:
+        return {"code": code, "has_methods": False}
+
+    latest = sorted(records, key=lambda x: (x.get("date", ""), x.get("time", "")))[-1]
+
+    methods = latest.get("methods", {})
+    track = latest.get("verify_track", [])
+    pred_price = track[0]["close"] if track else 0
+
+    snapshot = {
+        "code": code,
+        "name": latest.get("name", code),
+        "date": latest.get("date", ""),
+        "time": latest.get("time", ""),
+        "signal": latest.get("signal", ""),
+        "score": latest.get("score", 0),
+        "price": latest.get("price", 0),
+        "verified": latest.get("verified", False),
+        "methods": {},
+    }
+
+    for mkey, minfo in methods.items():
+        snapshot["methods"][mkey] = {
+            "score": minfo.get("score", 50),
+            "signal": minfo.get("signal", "持有"),
+            "verified": minfo.get("verified", False),
+            "correct": minfo.get("correct"),
+        }
+
+    # 如果已验证且有 track，计算多偏移表现
+    if latest.get("verified") and track and pred_price > 0:
+        same_day_pct = latest.get("same_day_change_pct")
+        offsets = [0, 1, 2, 3, 5, 10, 15, 20, 30]
+        multi = {}
+        for o in offsets:
+            if o == 0:
+                if same_day_pct is not None:
+                    multi[o] = {"return": round(same_day_pct, 2)}
+            else:
+                if len(track) > o:
+                    ret = (track[o]["close"] - pred_price) / pred_price * 100
+                    multi[o] = {"return": round(ret, 2)}
+        if multi:
+            snapshot["multi_offset"] = multi
+
+    return snapshot
+
+
+# ─── 自选股次日预测系统 ───
+NEXTDAY_FILE = os.path.join(PREDICTIONS_DIR, 'nextday.json')
+
+def _load_nextday():
+    os.makedirs(PREDICTIONS_DIR, exist_ok=True)
+    if not os.path.exists(NEXTDAY_FILE):
+        return []
+    try:
+        with open(NEXTDAY_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return []
+
+def _save_nextday(data):
+    os.makedirs(PREDICTIONS_DIR, exist_ok=True)
+    with open(NEXTDAY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def record_nextday_prediction(watchlist, fetch_kline_func=None):
+    """收盘后(15:01)记录次日方向预测"""
+    today = time.strftime('%Y-%m-%d')
+    data = _load_nextday()
+
+    # 删除今日已有记录（重新写入）
+    data = [r for r in data if not (r.get('date') == today)]
+
+    from engine.decision import make_decision
+    from engine.indicators import calc_support_resistance
+    from engine.patterns import scan_patterns
+
+    recorded = 0
+    for s in watchlist:
+        try:
+            code, market = s['code'], s['market']
+            k = fetch_kline_func(market + code, 120) if fetch_kline_func else []
+            if len(k) < 60:
+                continue
+            closes = [x['close'] for x in k]
+            sr = calc_support_resistance(k)
+            pats = scan_patterns({market + code: k})
+            patterns = pats.get(market + code, [])
+            decision = make_decision(closes, k, patterns, sr, None, None, code=code, market=market)
+            sig = decision.get('signal', '持有')
+            sc = decision.get('score', 50)
+            direction = '涨' if sig in ('买入', '增持') else '跌' if sig in ('卖出', '减仓') else (closes[-1] > closes[-2] and '涨' or '跌')
+            confidence = int(max(abs(sc - 50) * 2, 55)) if sig != '持有' else 55
+
+            data.append({
+                'date': today, 'code': code, 'market': market,
+                'name': s.get('name', code),
+                'direction': direction, 'confidence': confidence,
+                'signal': sig, 'score': sc,
+                'price': closes[-1] if closes else 0,
+                'verified': False, 'correct': None,
+            })
+            recorded += 1
+        except:
+            pass
+
+    _save_nextday(data)
+    return recorded
+
+def verify_nextday_predictions(fetch_kline_func):
+    """验证昨日自选股次日预测"""
+    today = time.strftime('%Y-%m-%d')
+    data = _load_nextday()
+    verified = 0
+
+    for r in data:
+        if r.get('verified'):
+            continue
+        pred_date = r.get('date', '')
+        if pred_date == today:
+            continue  # 今天的预测还没到验证时间
+
+        code = r['code']
+        market = r.get('market', 'sh')
+        try:
+            klines = fetch_kline_func(market + code, 10)
+            if not klines or len(klines) < 2:
+                continue
+
+            pred_price = r.get('price', 0)
+            if pred_price <= 0:
+                continue
+
+            # 找到预测日期下一个交易日的收盘价
+            for i, k in enumerate(klines):
+                if k['date'] == pred_date and i + 1 < len(klines):
+                    next_close = klines[i + 1]['close']
+                    next_change = (next_close - pred_price) / pred_price * 100
+                    direction = r.get('direction', '涨')
+                    correct = (next_change > 0 and direction == '涨') or (next_change < 0 and direction == '跌')
+                    r['verified'] = True
+                    r['correct'] = correct
+                    r['next_close'] = round(next_close, 2)
+                    r['next_change_pct'] = round(next_change, 2)
+                    verified += 1
+                    break
+        except:
+            continue
+
+    if verified:
+        _save_nextday(data)
+    return verified
+
+def get_nextday_stats():
+    """返回自选股次日预测统计"""
+    data = _load_nextday()
+    today = time.strftime('%Y-%m-%d')
+    today_pred = [r for r in data if r.get('date') == today]
+    verified = [r for r in data if r.get('verified') and r.get('correct') is not None]
+    correct_count = sum(1 for r in verified if r['correct'])
+    total = len(verified)
+
+    return {
+        'today_predictions': [{
+            'code': r['code'], 'name': r.get('name', r['code']),
+            'direction': r.get('direction'), 'confidence': r.get('confidence', 0),
+            'signal': r.get('signal'), 'score': r.get('score'),
+        } for r in today_pred],
+        'correct': correct_count,
+        'total': total,
+        'accuracy': round(correct_count / total * 100, 1) if total > 0 else 0,
     }
