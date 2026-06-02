@@ -364,14 +364,15 @@ def fetch_tencent_quote(codes_str):
         })
     return {r['code']: r for r in results}
 
-def fetch_kline(code_str, days=120):
-    """获取K线数据"""
-    url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code_str},day,,,{days},qfq'
+def fetch_kline(code_str, days=120, period='day'):
+    """获取K线数据, period: 'day' 或 'week'"""
+    url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code_str},{period},,,{days},qfq'
     import requests
     r = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
     raw = r.json()
     data = raw.get('data', {})
-    klines = data.get(code_str, {}).get('qfqday') or data.get(code_str, {}).get('day') or []
+    wk_key = f'qfq{period}'
+    klines = data.get(code_str, {}).get(wk_key) or data.get(code_str, {}).get(period) or []
     return [{'date': k[0], 'open': _f(k[1]), 'close': _f(k[2]),
              'high': _f(k[3]), 'low': _f(k[4]), 'volume': _int(k[5])} for k in klines]
 
@@ -792,6 +793,30 @@ def stock_capital_api(code):
     q = quotes.get(code, {})
     if q:
         result["name"] = q.get("name", "")
+    return jsonify(result)
+
+
+@app.route('/api/weekly/<code>')
+def weekly_analysis_api(code):
+    """周线分析"""
+    market = request.args.get('market', 'sh')
+    full_code = market + code
+    wk = fetch_kline(full_code, 60, period='week')
+    if not wk or len(wk) < 4:
+        return jsonify({'error': '周线数据不足', 'code': code})
+    from engine.weekly import assess_weekly
+    result = assess_weekly(wk)
+    result["code"] = code
+    result["market"] = market
+    result["kline_count"] = len(wk)
+    try:
+        q = fetch_tencent_quote(full_code)
+        if q and q.get(code):
+            result["name"] = q[code].get("name", "")
+            result["price"] = q[code].get("price", 0)
+            result["change_pct"] = q[code].get("changePercent", 0)
+    except:
+        pass
     return jsonify(result)
 
 
@@ -1744,6 +1769,58 @@ def scan_market_api():
     })
 
 
+@app.route('/api/scan/weekly')
+def scan_weekly_api():
+    """全市场周线扫描"""
+    stocks = fetch_a_share_list()
+    if not stocks:
+        return jsonify({'patterns': [], 'count': 0})
+    candidates = [s for s in stocks if (s.get('change_pct', 0) or 0) < 9.5 and (s.get('pe', 0) or 0) >= 0]
+    candidates.sort(key=lambda x: abs(x.get('volume', 0) or 0), reverse=True)
+    candidates = candidates[:200]
+
+    import concurrent.futures
+    def fetch_wk(s):
+        try:
+            k = fetch_kline(s['market'] + s['code'], 30, period='week')
+            return s, k
+        except:
+            return s, []
+    wk_map = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
+        for s, k in exe.map(fetch_wk, candidates):
+            if len(k) >= 8:
+                wk_map[s['code']] = {'info': s, 'kline': k}
+
+    from engine.weekly import assess_weekly
+    patterns_out = []
+    for code, item in wk_map.items():
+        try:
+            s = item['info']
+            r = assess_weekly(item['kline'])
+            if r['score'] >= 50:
+                chg = s.get('change_pct', 0) or 0
+                risk = '涨停' if chg >= 9.5 else '涨幅过大' if chg >= 7 else ''
+                patterns_out.append({
+                    'code': code, 'market': s['market'], 'name': s.get('name', code),
+                    'pattern_key': 'weekly_bullish', 'pattern_name': '周线多头',
+                    'label': r['summary'], 'risk': risk,
+                    'change_pct': round(chg, 2),
+                    'detail': r['signals'],
+                })
+                if r['signals'].get('engulfing', {}).get('engulfing'):
+                    patterns_out.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'pattern_key': 'weekly_engulfing', 'pattern_name': '周线阳包阴',
+                        'label': '上周阴被本周阳包掉', 'risk': risk,
+                        'change_pct': round(chg, 2), 'detail': {},
+                    })
+        except:
+            pass
+
+    return jsonify({'patterns': patterns_out, 'count': len(patterns_out), 'stocks_matched': len(wk_map), 'total_scanned': len(candidates)})
+
+
 @app.route('/api/dailypick')
 def dailypick_api():
     """返回每日一股推荐结果"""
@@ -2304,6 +2381,23 @@ def compute_daily_pick(period='morning'):
             s = val.get('score', 50)
             sig = '买入' if s >= 75 else '增持' if s >= 60 else '持有' if s >= 45 else '卖出'
             pick['details'][key] = {'score': s, 'signal': sig, 'reasons': val.get('reasons', [])}
+
+        # 周线分析
+        try:
+            wk = fetch_kline(best['market'] + best['code'], 30, period='week')
+            if wk and len(wk) >= 4:
+                from engine.weekly import assess_weekly
+                wr = assess_weekly(wk)
+                pick['weekly_signals'] = {
+                    'score': wr['score'],
+                    'summary': wr['summary'],
+                    'ma20_up': wr['signals']['ma20_trend']['ma20_up'],
+                    'consecutive_up': wr['signals']['consecutive_up']['consecutive_count'],
+                    'shrink_rise': wr['signals']['volume_shrink_rise']['shrink_rise'],
+                    'engulfing': wr['signals']['engulfing']['engulfing'],
+                }
+        except:
+            pass
 
         risk_parts = []
         if best['change_pct'] > 7:

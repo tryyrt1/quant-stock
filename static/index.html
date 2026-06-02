@@ -401,7 +401,7 @@ function renderPatterns() {
 
   // 按模式名称分组
   const grouped = {}
-  const patternOrder = ['连续上攻', '均线金叉', 'OBV价升创新高', 'OBV横盘', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停', '潜在翻倍']
+  const patternOrder = ['周线多头', '周线阳包阴', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV横盘', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停', '潜在翻倍']
 
   patterns.forEach(p => {
     if (!grouped[p.pattern_name]) grouped[p.pattern_name] = []
@@ -1089,8 +1089,10 @@ function renderReport(data, decision) {
       <div style="margin-top:6px;display:flex;gap:6px">
         <button class="btn btn-ms" onclick="runMinesweeper('${data.code}')" id="msBtn" style="flex:1">🔍 排雷检测</button>
         <button class="btn btn-sc" onclick="showTechScore()" id="scBtn" style="flex:1">📐 技术评分</button>
+        <button class="btn btn-weekly" onclick="loadWeeklyAnalysis('${data.code}','${data.market||'sh'}')" id="wkBtn" style="flex:1">📅 周线分析</button>
       </div>
       <div id="msResult" style="margin-top:8px;display:none"></div>
+      <div id="weeklyResult" style="margin-top:8px;display:none"></div>
     </div>
   `
 
@@ -1159,6 +1161,10 @@ function renderDailyPick(data) {
     ? '<div style="font-size:11px;color:#888;margin-top:6px">支撑 ' + (sr.support||'--') + ' | 压力 ' + (sr.resistance||'--') + '</div>' : ''
   const riskHtml = p.risk_warning
     ? '<div style="margin-top:8px;padding:6px 10px;background:rgba(255,165,0,.1);border:1px solid rgba(255,165,0,.3);border-radius:4px;font-size:11px;color:#ffa502">⚠️ ' + p.risk_warning + '</div>' : ''
+  const wk = p.weekly_signals || {}
+  const wkHtml = wk.score != null
+    ? '<div style="margin-top:6px;padding:4px 8px;background:rgba(0,210,255,.05);border-radius:4px;font-size:11px;color:#888;text-align:center">📅 周线 ' + (wk.score >= 60 ? '✅' : '⚠️') + ' ' + (wk.summary || '') + '</div>'
+    : ''
   const html =
     '<div style="font-size:12px">' +
     '<div style="text-align:center;margin-bottom:12px"><span style="font-size:22px">' + periodIcon + '</span>' +
@@ -1179,6 +1185,7 @@ function renderDailyPick(data) {
     '<div style="font-size:11px;color:#aaa;margin-bottom:4px">📝 推荐理由</div>' + reasonsHtml + '</div>' : '') +
     (srHtml ? '<div style="margin-top:8px;padding:8px;background:rgba(255,255,255,.02);border-radius:4px;text-align:center">' + srHtml + '</div>' : '') +
     riskHtml +
+    wkHtml +
     '<div style="text-align:center;font-size:10px;color:#555;margin-top:12px">计算时间: ' + (data.computed_at || '--') + '</div></div>'
   document.getElementById('dailypickContent').innerHTML = html
 }
@@ -1494,12 +1501,18 @@ async function loadSnapshots() {
   if (!tab) return
   const t = tab.dataset.tab
 
-  if (t === 'patterns' && data.patterns) {
+  if (t === 'patterns') {
+    state.patterns = (data.patterns && data.patterns.patterns) ? data.patterns.patterns : []
+    try {
+      const wk = await api('/api/scan/weekly')
+      if (wk && wk.patterns && wk.patterns.length) {
+        state.patterns = state.patterns.concat(wk.patterns)
+      }
+    } catch(e) {}
+    renderPatterns()
     const info = document.getElementById('marketScanInfo')
-    if (info) info.textContent = `📁 自动扫描 @ ${data.patterns.time || data.time || '?'} | ${data.patterns.count}个形态 | 点击"扫描"获取最新`
-    if (data.patterns.patterns && data.patterns.patterns.length) {
-      state.patterns = data.patterns.patterns
-      renderPatterns()
+    if (info) {
+      info.textContent = `📁 自动扫描 @ ${data.patterns?.time || data.time || '?'} | ${state.patterns.length}个形态 | 点击"扫描"获取最新`
     }
   }
   if (t === 'sectors' && data.sectors) {
@@ -1573,9 +1586,17 @@ function renderWLPatterns(predict, ndStats) {
     if (ndStats.today_predictions && ndStats.today_predictions.length) {
       ndHtml += '<div style="font-size:12px;color:#aaa;margin-bottom:4px">今日预测:</div>'
       ndStats.today_predictions.forEach(p => {
+        const ss = ndStats.stock_stats && ndStats.stock_stats[p.code]
+        let accHtml = ''
+        if (ss && ss.total > 0) {
+          const aClr = ss.accuracy >= 60 ? '#2ed573' : ss.accuracy >= 40 ? '#ffa502' : '#ff4757'
+          accHtml = '<span style="font-size:10px;color:' + aClr + '"> 历史' + ss.accuracy + '% (' + ss.correct + '/' + ss.total + ')</span>'
+        } else {
+          accHtml = '<span style="font-size:10px;color:#555"> 暂无历史</span>'
+        }
         ndHtml += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04)">' +
-          '<span>' + p.name + '</span>' +
-          '<span style="color:' + (p.direction === '涨' ? '#2ed573' : '#ff4757') + ';font-weight:600">' + p.direction + ' (' + p.confidence + '%)</span></div>'
+          '<span>' + p.name + accHtml + '</span>' +
+          '<span style="color:' + (p.direction === '涨' ? '#2ed573' : '#ff4757') + ';font-weight:600">' + p.direction + '</span></div>'
       })
     }
 
@@ -2066,6 +2087,51 @@ function runMinesweeper(code) {
       btn.disabled = false; btn.innerHTML = '🔍 排雷检测'; btn.className = 'btn btn-ms'
       result.innerHTML = `<div class="uzi-error">❌ ${err.message}</div>`
     })
+}
+
+async function loadWeeklyAnalysis(code, market) {
+  const el = document.getElementById('weeklyResult')
+  const btn = document.getElementById('wkBtn')
+  el.style.display = 'block'
+  btn.disabled = true
+  btn.innerHTML = '<span class="spinner"></span> 分析中...'
+  try {
+    const data = await api(`/api/weekly/${code}?market=${market}`)
+    if (!data || data.error) {
+      el.innerHTML = '<div style="font-size:11px;color:var(--dim);padding:8px">暂无周线数据</div>'
+      return
+    }
+    const s = data.signals || {}
+    function row(label, ok, detail) {
+      const icon = ok ? '✅' : '❌'
+      const cl = ok ? '#2ed573' : '#ff4757'
+      return '<div style="padding:4px 8px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04)">' +
+        '<span style="color:' + cl + '">' + icon + '</span> ' + label +
+        (detail ? ' <span style="color:#888;font-size:11px">' + detail + '</span>' : '') + '</div>'
+    }
+    let html = '<div style="padding:8px;background:rgba(0,210,255,.05);border-radius:6px;font-size:12px">' +
+      '<div style="color:#aaa;margin-bottom:6px;font-size:13px">📅 周线分析</div>'
+    html += row('20周线上翘', s.ma20_trend?.ma20_up, s.ma20_trend?.ma20_up ? 'MA20=' + s.ma20_trend.ma20 : '')
+    html += row('股价在20周线上', s.ma20_trend?.price_above_ma20, '')
+    html += row('周线连阳', s.consecutive_up?.consecutive_count >= 2, s.consecutive_up?.consecutive_count + '周')
+    html += row('缩量上涨', s.volume_shrink_rise?.shrink_rise, '')
+    html += row('阳包阴', s.engulfing?.engulfing, '')
+    html += row('长时间横盘', s.consolidation?.consolidation, s.consolidation?.amplitude ? '振幅' + s.consolidation.amplitude + '%' : '')
+    html += row('量价温和', s.volume_harmony?.harmony, s.volume_harmony?.correlation != null ? 'r=' + s.volume_harmony.correlation : '')
+    html += '<div style="margin-top:6px;padding:6px;text-align:center;background:rgba(0,0,0,.15);border-radius:4px">' +
+      '<span style="color:#00d2ff;font-size:16px;font-weight:700">' + data.score + '</span>' +
+      '<span style="color:#888;font-size:11px;margin-left:6px">/ 100</span></div>'
+    if (data.summary) {
+      html += '<div style="margin-top:4px;font-size:11px;color:#888;text-align:center">' + data.summary + '</div>'
+    }
+    html += '</div>'
+    el.innerHTML = html
+  } catch(e) {
+    el.innerHTML = '<div style="font-size:11px;color:#ff4757;padding:8px">加载失败</div>'
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '📅 周线分析'
+  }
 }
 
 function switchDataSource(source) {
