@@ -195,12 +195,15 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     <div class="card">
       <div class="card-title">🎯 选股模式扫描</div>
       <div style="font-size:12px;color:#aaa;margin-bottom:10px">
-        9 种实战验证的技术形态识别 (含OBV量能+超跌+首板):
+        12 种形态识别 (含周线+OBV量能+超跌+首板):
         <span style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">
+          <span class="tag" style="background:rgba(0,200,100,.12);color:#00c864">周线多头</span>
+          <span class="tag" style="background:rgba(0,200,100,.12);color:#00c864">周线阳包阴</span>
+          <span class="tag" style="background:rgba(0,200,100,.12);color:#00c864">周线粘合向上发散</span>
           <span class="tag" style="background:rgba(0,210,255,.12);color:var(--accent)">连续上攻</span>
           <span class="tag" style="background:rgba(255,71,87,.12);color:var(--up)">均线金叉</span>
           <span class="tag" style="background:rgba(160,90,255,.12);color:#a05aff">OBV价升创新高</span>
-          <span class="tag" style="background:rgba(160,90,255,.12);color:#a05aff">OBV横盘</span>
+
           <span class="tag" style="background:rgba(160,90,255,.12);color:#a05aff">OBV底背离</span>
           <span class="tag" style="background:rgba(255,70,200,.12);color:#ff46c8">OBV+连涨共振</span>
           <span class="tag" style="background:rgba(0,230,200,.12);color:#00e6c8">长下影+中阳</span>
@@ -401,7 +404,7 @@ function renderPatterns() {
 
   // 按模式名称分组
   const grouped = {}
-  const patternOrder = ['周线多头', '周线阳包阴', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV横盘', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停', '潜在翻倍']
+  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停']
 
   patterns.forEach(p => {
     if (!grouped[p.pattern_name]) grouped[p.pattern_name] = []
@@ -413,13 +416,12 @@ function renderPatterns() {
     '连续上攻': { bg: 'rgba(0,210,255,.08)', border: 'rgba(0,210,255,.2)', text: 'var(--accent)' },
     '均线金叉': { bg: 'rgba(255,71,87,.08)', border: 'rgba(255,71,87,.2)', text: 'var(--up)' },
     'OBV价升创新高': { bg: 'rgba(160,90,255,.08)', border: 'rgba(160,90,255,.2)', text: '#a05aff' },
-    'OBV横盘': { bg: 'rgba(160,90,255,.08)', border: 'rgba(160,90,255,.2)', text: '#a05aff' },
     'OBV底背离': { bg: 'rgba(160,90,255,.08)', border: 'rgba(160,90,255,.2)', text: '#a05aff' },
+    '周线粘合向上发散': { bg: 'rgba(0,200,100,.08)', border: 'rgba(0,200,100,.2)', text: '#00c864' },
     'OBV+连涨共振': { bg: 'rgba(255,70,200,.08)', border: 'rgba(255,70,200,.2)', text: '#ff46c8' },
     '长下影+中阳': { bg: 'rgba(0,230,200,.08)', border: 'rgba(0,230,200,.2)', text: '#00e6c8' },
     '超跌筛选': { bg: 'rgba(255,70,70,.08)', border: 'rgba(255,70,70,.2)', text: '#ff4646' },
     '首板涨停': { bg: 'rgba(255,215,0,.08)', border: 'rgba(255,215,0,.2)', text: '#ffd700' },
-    '潜在翻倍': { bg: 'rgba(255,100,50,.08)', border: 'rgba(255,100,50,.2)', text: '#ff6432' },
   }
   patternOrder.forEach(name => {
     const items = grouped[name] || []
@@ -498,8 +500,15 @@ async function scanMarket() {
   document.getElementById('marketScanInfo').textContent = '获取股票列表并分析形态，约需30-60秒...'
 
   const data = await apiPost('/api/scan/market', {})
+  let allPatterns = (data && data.patterns) ? data.patterns : []
+  try {
+    const wk = await api('/api/scan/weekly')
+    if (wk && wk.patterns && wk.patterns.length) {
+      allPatterns = wk.patterns.concat(allPatterns)
+    }
+  } catch(e) {}
+  state.patterns = allPatterns
   if (data && data.patterns) {
-    state.patterns = data.patterns
     document.getElementById('patternInfo').textContent =
       `全市场: ${data.total_scanned}只中扫描${data.candidates}只, ${data.stocks_matched}只命中${data.count}个形态`
     document.getElementById('marketScanInfo').textContent =
@@ -1329,9 +1338,7 @@ function renderSectorResults(sectors) {
   let html = ''
   const patColors = {
     '连续上攻': '#00d2ff', '均线金叉': '#ff4757', 'OBV价升创新高': '#a05aff',
-    'OBV横盘': '#a05aff', 'OBV底背离': '#a05aff', 'OBV+连涨共振': '#ff46c8',
     '长下影+中阳': '#00e6c8', '超跌筛选': '#ff4646', '首板涨停': '#ffd700',
-    '潜在翻倍': '#ff6432', '低位放量': '#2ed573',
   }
   sectors.forEach(sec => {
     const upPct = sec.stock_count > 0 ? (sec.up_count / sec.stock_count * 100).toFixed(0) : 0
@@ -1494,21 +1501,20 @@ function fmtNum(v) {
 }
 
 // ===================== Snapshot (定时扫描结果) =====================
+let _loadingSnapshots = false
+
 async function loadSnapshots() {
+  if (_loadingSnapshots) return
+  _loadingSnapshots = true
   const data = await api('/api/snapshots')
-  if (!data) return
+  if (!data) { _loadingSnapshots = false; return }
   const tab = document.querySelector('.tab.active')
-  if (!tab) return
+  if (!tab) { _loadingSnapshots = false; return }
   const t = tab.dataset.tab
 
   if (t === 'patterns') {
-    state.patterns = (data.patterns && data.patterns.patterns) ? data.patterns.patterns : []
-    try {
-      const wk = await api('/api/scan/weekly')
-      if (wk && wk.patterns && wk.patterns.length) {
-        state.patterns = state.patterns.concat(wk.patterns)
-      }
-    } catch(e) {}
+    const snapPats = (data.patterns && data.patterns.patterns) ? data.patterns.patterns : []
+    state.patterns = snapPats
     renderPatterns()
     const info = document.getElementById('marketScanInfo')
     if (info) {
@@ -1522,6 +1528,7 @@ async function loadSnapshots() {
       renderSectorResults(data.sectors.sectors)
     }
   }
+  _loadingSnapshots = false
 }
 
 // ─── 预测统计 ───

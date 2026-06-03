@@ -1815,6 +1815,14 @@ def scan_weekly_api():
                         'label': '上周阴被本周阳包掉', 'risk': risk,
                         'change_pct': round(chg, 2), 'detail': {},
                     })
+                if r['signals'].get('ma_converge_spread', {}).get('converge_spread'):
+                    cs = r['signals']['ma_converge_spread']
+                    patterns_out.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'pattern_key': 'weekly_converge_spread', 'pattern_name': '周线粘合向上发散',
+                        'label': f'MA5:{cs["ma5"]} MA10:{cs["ma10"]} MA20:{cs["ma20"]}', 'risk': risk,
+                        'change_pct': round(chg, 2), 'detail': {},
+                    })
         except:
             pass
 
@@ -2264,10 +2272,10 @@ def compute_daily_pick(period='morning'):
         if candidates and all(c.get('volume', 0) == 0 for c in candidates):
             import random
             random.shuffle(candidates)
-            candidates = candidates[:100]  # 减少到 100 只，避免 CPU 打满
+            candidates = candidates[:500]  # 扩大到 500 只，优中选优
         else:
             candidates.sort(key=lambda x: abs(x.get('volume', 0) or 0), reverse=True)
-            candidates = candidates[:100]
+            candidates = candidates[:500]
         print(f'[dailypick] 候选 {len(candidates)} 只，获取K线...')
 
         import concurrent.futures

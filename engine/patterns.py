@@ -706,13 +706,13 @@ ALL_PATTERNS = [
     ('golden_cross', '均线金叉', pattern_golden_cross),
     ('low_vol_surge', '低位放量', pattern_low_vol_surge),
     ('obv_breakout', 'OBV价升创新高', pattern_obv_breakout),
-    ('obv_flat', 'OBV横盘', pattern_obv_flat),
+    # ('obv_flat', 'OBV横盘', pattern_obv_flat),  # 已移除
     ('obv_divergence', 'OBV底背离', pattern_obv_divergence),
     ('obv_plus_breakout', 'OBV+连涨共振', pattern_obv_plus_breakout),
     ('long_lower_shadow', '长下影+中阳', pattern_long_lower_shadow),
     ('oversold', '超跌筛选', pattern_oversold),
     ('one_limitup', '首板涨停', pattern_one_limitup),
-    ('pre_breakout', '潜在翻倍', pattern_pre_breakout),
+    # ('pre_breakout', '潜在翻倍', pattern_pre_breakout),  # 已移除
     ('biasvol_buy', 'BIASVOL放量超卖', pattern_biasvol_buy),
     ('vp_confirm', '量价共振', pattern_vp_confirm),
     ('vp_divergence', '量价背离', pattern_vp_divergence),

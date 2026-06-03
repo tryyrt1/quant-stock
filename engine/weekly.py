@@ -116,7 +116,8 @@ def assess_weekly(weekly_kline):
     r4 = check_engulfing(weekly_kline)
     r5 = check_consolidation(weekly_kline)
     r6 = check_volume_harmony(weekly_kline)
-    total = r1['score'] + r2['score'] + r3['score'] + r4['score'] + r5['score'] + r6['score']
+    r7 = check_ma_converge_spread(weekly_kline)
+    total = r1['score'] + r2['score'] + r3['score'] + r4['score'] + r5['score'] + r6['score'] + r7['score']
     total = min(100, max(0, total))
     # 汇总文本
     parts = []
@@ -145,5 +146,24 @@ def assess_weekly(weekly_kline):
             'engulfing': r4,
             'consolidation': r5,
             'volume_harmony': r6,
+            'ma_converge_spread': r7,
         },
     }
+
+
+def check_ma_converge_spread(weekly_kline):
+    """周线均线粘合向上发散: MA5/MA10/MA20 粘合后发散向上"""
+    closes = [k['close'] for k in weekly_kline]
+    if len(closes) < 15:
+        return {'converge_spread': False, 'score': 0}
+    ma5 = _ma(closes, 5)
+    ma10 = _ma(closes, 10)
+    ma20 = _ma(closes, 20)
+    if None in (ma5, ma10, ma20):
+        return {'converge_spread': False, 'score': 0}
+    spread = max(ma5, ma10, ma20) / min(ma5, ma10, ma20) - 1 if min(ma5, ma10, ma20) > 0 else 99
+    diverging = ma5 > ma10 > ma20
+    if diverging and spread < 0.08:
+        return {'converge_spread': True, 'ma5': round(ma5, 2), 'ma10': round(ma10, 2),
+                'ma20': round(ma20, 2), 'spread': round(spread * 100, 1), 'score': 20}
+    return {'converge_spread': False, 'score': 0}
