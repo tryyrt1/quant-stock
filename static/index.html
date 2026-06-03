@@ -1099,6 +1099,7 @@ function renderReport(data, decision) {
         <!-- UZI 深度分析已移除 -->
       </div>
       <div id="capitalResult" style="margin-top:8px;display:none"></div>
+      <div id="mfcDisplay" style="margin-top:6px;display:none"></div>
       <div style="margin-top:6px;display:flex;gap:6px">
         <button class="btn btn-ms" onclick="runMinesweeper('${data.code}')" id="msBtn" style="flex:1">🔍 排雷检测</button>
         <button class="btn btn-sc" onclick="showTechScore()" id="scBtn" style="flex:1">📐 技术评分</button>
@@ -1110,6 +1111,7 @@ function renderReport(data, decision) {
   `
 
   document.getElementById('reportContent').innerHTML = html
+  renderMFC();
 }
 
 // ===== 每日一股 =====
@@ -1404,6 +1406,27 @@ function switchTab(tab) {
 }
 function showHome() { switchTab('home') }
 function showDetail() { switchTab('detail') }
+
+function renderMFC() {
+  var el = document.getElementById('mfcDisplay');
+  var mfc = window._lastStockData && window._lastStockData.mfc;
+  if (!mfc || !mfc.score) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  var cl = mfc.score >= 75 ? '#2ed573' : mfc.score >= 55 ? '#00d2ff' : mfc.score >= 35 ? '#ffa502' : '#888';
+  var html = '<div style="color:#aaa;margin-bottom:4px;font-size:12px">📊 主力控盘度</div>' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+    '<span style="font-size:18px;font-weight:700;color:' + cl + '">' + mfc.score + '</span>' +
+    '<span style="font-size:11px;color:' + cl + '">' + mfc.level + '</span>' +
+    '<div style="flex:1;height:6px;background:rgba(255,255,255,.06);border-radius:3px">' +
+    '<div style="width:' + mfc.score + '%;height:100%;background:' + cl + ';border-radius:3px"></div></div></div>';
+  if (mfc.items) {
+    mfc.items.forEach(function(it) {
+      var ic = it.ok ? '#2ed573' : '#888';
+      html += '<div style="font-size:10px;color:' + ic + ';padding:1px 0">' + (it.ok ? '✅' : '⬜') + ' ' + it.name + ' (' + it.score + '): ' + it.reason + '</div>';
+    });
+  }
+  el.innerHTML = html;
+}
 
 async function loadCapitalCost(code, market) {
   const btn = document.getElementById('capitalBtn')

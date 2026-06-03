@@ -294,3 +294,128 @@ def calc_support_resistance(kline):
         'resistance_strength': strength(nearest_resistance, True),
         'support_strength': strength(nearest_support, False),
     }
+from .indicators import calc_support_resistance
+
+def calc_main_force_control(klines, turnover_rate=None, capital_scores=None, news_sentiment=None, index_klines=None):
+    items = []
+    total_score = 0
+    if not klines or len(klines) < 20:
+        return {'score': 0, 'level': '数据不足', 'items': []}
+    closes = [k['close'] for k in klines]
+
+    # 1. 缩量上涨
+    up_days = 0; shrink_up_days = 0
+    for i in range(1, min(21, len(klines))):
+        if klines[-i]['close'] > klines[-i-1]['close']:
+            up_days += 1
+            if klines[-i]['volume'] < klines[-i-1]['volume']:
+                shrink_up_days += 1
+    if up_days > 0 and shrink_up_days / up_days > 0.5:
+        s = min(15, int(shrink_up_days / up_days * 15))
+        total_score += s
+        items.append({'name':'缩量上涨','ok':True,'score':s,'reason':f'涨日{up_days}天中{shrink_up_days}天缩量'})
+    else:
+        items.append({'name':'缩量上涨','ok':False,'score':0,'reason':'涨日放量或无明显缩量'})
+
+    # 2. 换手率
+    if turnover_rate is not None and turnover_rate > 0:
+        if turnover_rate < 1: s=15; r=f'换手率{turnover_rate}% 极低'
+        elif turnover_rate < 3: s=12; r=f'换手率{turnover_rate}% 偏低'
+        elif turnover_rate < 5: s=8; r=f'换手率{turnover_rate}% 中等'
+        elif turnover_rate < 10: s=4; r=f'换手率{turnover_rate}% 偏高'
+        else: s=0; r=f'换手率{turnover_rate}% 过高'
+        total_score += s; items.append({'name':'换手率','ok':s>=8,'score':s,'reason':r})
+    else:
+        items.append({'name':'换手率','ok':False,'score':0,'reason':'无数据'})
+
+    # 3. 筹码集中度
+    try:
+        mn = min(k['low'] for k in klines[-60:])
+        mx = max(k['high'] for k in klines[-60:])
+        if mx - mn > 0:
+            bs = (mx - mn) / 25
+            vp = [0.0]*25
+            for k in klines[-60:]:
+                lo = max(0, int((k['low']-mn)/bs))
+                hi = min(24, int((k['high']-mn)/bs))
+                if hi >= lo:
+                    vb = k['volume']/(hi-lo+1)
+                    for i in range(lo,hi+1): vp[i] += vb
+            tv = sum(vp)
+            pv = max(vp)
+            if tv > 0:
+                pr = pv/tv*100
+                if pr>20: s=15; r=f'POC占比{pr:.1f}% 高度集中'
+                elif pr>12: s=10; r=f'POC占比{pr:.1f}% 较集中'
+                elif pr>6: s=5; r=f'POC占比{pr:.1f}% 一般'
+                else: s=0; r=f'POC占比{pr:.1f}% 分散'
+                total_score += s; items.append({'name':'筹码集中','ok':pr>12,'score':s,'reason':r})
+    except: items.append({'name':'筹码集中','ok':False,'score':0,'reason':'计算失败'})
+
+    # 4. 涨放量跌缩量
+    uv, dv = [], []
+    for i in range(1, min(41, len(klines))):
+        if klines[-i]['close'] > klines[-i-1]['close']: uv.append(klines[-i]['volume'])
+        else: dv.append(klines[-i]['volume'])
+    au = sum(uv)/len(uv) if uv else 0
+    ad = sum(dv)/len(dv) if dv else 0
+    if ad>0 and au/ad>1.5: s=10; r=f'涨均量{au/10000:.0f}万 >> 跌均量{ad/10000:.0f}万'
+    elif ad>0 and au/ad>1: s=5; r=f'涨略大于跌({au/ad:.1f}x)'
+    else: s=0; r='涨跌量比不明显'
+    total_score += s; items.append({'name':'涨放量跌缩量','ok':s>=5,'score':s,'reason':r})
+
+    # 5. 资金流入
+    if capital_scores and len(capital_scores)>0:
+        inf = sum(1 for sc in capital_scores if (sc or 0)>50)
+        if inf>=5: s=15; r=f'近{len(capital_scores)}日中{inf}日主力流入'
+        elif inf>=3: s=10; r=f'近{len(capital_scores)}日中{inf}日主力流入'
+        elif inf>=1: s=5; r=f'近{len(capital_scores)}日中{inf}日主力流入'
+        else: s=0; r='主力无明显流入'
+        total_score += s; items.append({'name':'资金流入','ok':inf>=3,'score':s,'reason':r})
+    else: items.append({'name':'资金流入','ok':False,'score':0,'reason':'无数据'})
+
+    # 6. 振幅平稳
+    amps = [(k['high']-k['low'])/k['low']*100 for k in klines[-20:] if k['low']>0]
+    aa = sum(amps)/len(amps) if amps else 5
+    if aa<2.5: s=10; r=f'日均振幅{aa:.1f}% 极平稳'
+    elif aa<4: s=6; r=f'日均振幅{aa:.1f}% 较平稳'
+    elif aa<6: s=3; r=f'日均振幅{aa:.1f}% 正常'
+    else: s=0; r=f'日均振幅{aa:.1f}% 波动大'
+    total_score += s; items.append({'name':'振幅平稳','ok':aa<4,'score':s,'reason':r})
+
+    # 7. 独立大盘
+    if index_klines and len(index_klines)>=20 and len(closes)>=20:
+        try:
+            ic = [k['close'] for k in index_klines[-20:]]
+            sr = [(closes[-i]-closes[-i-1])/closes[-i-1] for i in range(1,20)]
+            ir = [(ic[-i]-ic[-i-1])/ic[-i-1] for i in range(1,20)]
+            n=len(sr); as_=sum(sr)/n; ai=sum(ir)/n
+            num=d1=d2=0
+            for i in range(n):
+                ds=sr[i]-as_; di=ir[i]-ai
+                num+=ds*di; d1+=ds*ds; d2+=di*di
+            import math
+            cor=num/(math.sqrt(d1*d2) if d1*d2>0 else 1)
+            if abs(cor)<0.2: s=10; r=f'与大盘相关{cor:.2f} 极独立'
+            elif abs(cor)<0.4: s=6; r=f'与大盘相关{cor:.2f} 较独立'
+            elif abs(cor)<0.6: s=3; r=f'与大盘相关{cor:.2f} 一般'
+            else: s=0; r=f'与大盘相关{cor:.2f} 跟盘'
+            total_score+=s; items.append({'name':'独立大盘','ok':abs(cor)<0.4,'score':s,'reason':r})
+        except: items.append({'name':'独立大盘','ok':False,'score':0,'reason':'计算失败'})
+    else: items.append({'name':'独立大盘','ok':False,'score':0,'reason':'数据不足'})
+
+    # 8. 利空大涨
+    if news_sentiment is not None and len(closes)>=2:
+        dc=(closes[-1]-closes[-2])/closes[-2]*100
+        if news_sentiment<-0.3 and dc>2: s=10; r=f'新闻偏空({news_sentiment:.1f})但涨{dc:.1f}%'
+        elif news_sentiment<-0.2 and dc>1: s=5; r=f'新闻略空({news_sentiment:.1f})涨{dc:.1f}%'
+        else: s=0; r='无明显利空大涨'
+        total_score+=s; items.append({'name':'利空大涨','ok':s>=5,'score':s,'reason':r})
+    else: items.append({'name':'利空大涨','ok':False,'score':0,'reason':'无数据'})
+
+    total_score = min(100, max(0, total_score))
+    if total_score >= 75: level='高度控盘'
+    elif total_score >= 55: level='中度控盘'
+    elif total_score >= 35: level='轻度控盘'
+    else: level='无控盘'
+    return {'score': total_score, 'level': level, 'items': items}

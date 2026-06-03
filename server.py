@@ -503,6 +503,17 @@ def stock_detail(code):
             'ma60': round(calc_ma(closes, 60)[-1], 2) if calc_ma(closes, 60)[-1] else None,
         }
 
+    # 主力控盘度
+    mfc_result = {}
+    try:
+        idx_k = fetch_kline('sh000001', 30)
+        from engine.indicators import calc_main_force_control
+        turnover = quote.get('turnover', 0) if quote else 0
+        sentiment_score_local = sentiment_score if 'sentiment_score' in dir() else 0
+        mfc_result = calc_main_force_control(kline, turnover_rate=turnover, news_sentiment=sentiment_score, index_klines=idx_k)
+    except:
+        pass
+
     # 量价关系
     vp_result = {}
     if len(kline) >= 60:
@@ -524,6 +535,7 @@ def stock_detail(code):
         'sentiment': round(sentiment_score, 2),
         'data_source': get_active_data_source(),
         'vp': vp_result,
+        'mfc': mfc_result,
     })
 
 
