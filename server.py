@@ -426,7 +426,7 @@ def watchlist_api():
 
         exists = any(s['code'] == code and s['market'] == market for s in wl)
         if not exists:
-            wl.append({'code': code, 'market': market, 'name': name, 'added': time.strftime('%Y-%m-%d')})
+            wl.insert(0, {'code': code, 'market': market, 'name': name, 'added': time.strftime('%Y-%m-%d')})
             save_watchlist(wl)
 
         return jsonify(wl)
@@ -503,17 +503,27 @@ def stock_detail(code):
             'ma60': round(calc_ma(closes, 60)[-1], 2) if calc_ma(closes, 60)[-1] else None,
         }
 
+    # 量价关系
+    vp_result = {}
+    if len(kline) >= 60:
+        try:
+            from engine.indicators import classify_vp_relationship
+            vp_result = classify_vp_relationship(kline)
+        except:
+            pass
+
     return jsonify({
         'code': code,
         'market': market,
         'quote': quote,
-        'kline': kline[-60:],  # 最近60条
+        'kline': kline[-60:],
         'indicators': indicators,
         'factors': factors,
         'sr': sr,
         'news': news_analyzed[:10],
         'sentiment': round(sentiment_score, 2),
         'data_source': get_active_data_source(),
+        'vp': vp_result,
     })
 
 

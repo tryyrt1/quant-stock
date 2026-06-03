@@ -404,7 +404,7 @@ function renderPatterns() {
 
   // 按模式名称分组
   const grouped = {}
-  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停']
+  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '量增价平', '量增价升', '量减价升', '量减价平', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停']
 
   patterns.forEach(p => {
     if (!grouped[p.pattern_name]) grouped[p.pattern_name] = []
@@ -418,6 +418,10 @@ function renderPatterns() {
     'OBV价升创新高': { bg: 'rgba(160,90,255,.08)', border: 'rgba(160,90,255,.2)', text: '#a05aff' },
     'OBV底背离': { bg: 'rgba(160,90,255,.08)', border: 'rgba(160,90,255,.2)', text: '#a05aff' },
     '周线粘合向上发散': { bg: 'rgba(0,200,100,.08)', border: 'rgba(0,200,100,.2)', text: '#00c864' },
+    '量增价平': { bg: 'rgba(255,165,0,.08)', border: 'rgba(255,165,0,.2)', text: '#ffa502' },
+    '量增价升': { bg: 'rgba(46,213,115,.08)', border: 'rgba(46,213,115,.2)', text: '#2ed573' },
+    '量减价升': { bg: 'rgba(255,165,0,.08)', border: 'rgba(255,165,0,.2)', text: '#ffa502' },
+    '量减价平': { bg: 'rgba(160,160,160,.08)', border: 'rgba(160,160,160,.2)', text: '#aaa' },
     'OBV+连涨共振': { bg: 'rgba(255,70,200,.08)', border: 'rgba(255,70,200,.2)', text: '#ff46c8' },
     '长下影+中阳': { bg: 'rgba(0,230,200,.08)', border: 'rgba(0,230,200,.2)', text: '#00e6c8' },
     '超跌筛选': { bg: 'rgba(255,70,70,.08)', border: 'rgba(255,70,70,.2)', text: '#ff4646' },
@@ -2050,7 +2054,13 @@ function showTechScore(data) {
   html += '</div>';
   html += '<div style="text-align:center;margin-bottom:10px"><span style="color:'+scoreColor+';font-size:14px;font-weight:bold;background:'+scoreColor+'22;padding:4px 16px;border-radius:4px">操作建议: ' + advice + '</span></div>';
   html += bar(trendScore, '趋势', 0) + bar(momentumScore, '动量', 1) + bar(volumeScore, '量能', 2) + bar(stabilityScore, '稳定', 3);
-  if (rsi !== undefined) html += '<div style="margin-top:6px;color:#888;font-size:12px">RSI: '+rsi.toFixed(1)+' | MACD: '+(macd?macd.toFixed(3):'-')+'</div>';
+
+  // 量价关系（从API读取后端分类结果）
+  var _vp_d = window._lastStockData && window._lastStockData.vp;
+  if (_vp_d && _vp_d.label) {
+    var _vp_c = _vp_d.color === 'red' ? '#ff4757' : _vp_d.color === 'green' ? '#2ed573' : _vp_d.color === 'orange' ? '#ffa502' : '#888';
+    html += '<div style="margin-top:4px;color:' + _vp_c + ';font-size:12px">📊 量价：' + _vp_d.label + '</div>';
+  }
   html += '</div>';
 
   result.innerHTML = html;

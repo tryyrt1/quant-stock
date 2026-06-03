@@ -1,5 +1,5 @@
 """量选股模式识别 - 基于K线数据的形态扫描"""
-from .indicators import calc_ma, calc_rsi, calc_macd, check_golden_cross, check_macd_gc, calc_biasvol, calc_vp_correlation
+from .indicators import calc_ma, calc_rsi, calc_macd, check_golden_cross, check_macd_gc, calc_biasvol, calc_vp_correlation, classify_vp_relationship
 
 def _safe_close(klines):
     return [k['close'] for k in klines]
@@ -700,6 +700,44 @@ def pattern_vp_divergence(klines, period=20, max_corr=-0.3):
     }
 
 
+
+
+def pattern_vp_increase_flat(klines, lookback=120):
+    """量增价平"""
+    if not klines or len(klines) < lookback:
+        return False, {}
+    r = classify_vp_relationship(klines)
+    if r['type'] == '量增价平':
+        return True, {'label': r['label'], 'color': r['color'], 'score': r['score'], 'vp_type': r['type']}
+    return False, {}
+
+def pattern_vp_increase_up(klines, lookback=120):
+    """量增价升"""
+    if not klines or len(klines) < lookback:
+        return False, {}
+    r = classify_vp_relationship(klines)
+    if r['type'] == '量增价升':
+        return True, {'label': r['label'], 'color': r['color'], 'score': r['score'], 'vp_type': r['type']}
+    return False, {}
+
+def pattern_vp_decrease_up(klines, lookback=120):
+    """量减价升"""
+    if not klines or len(klines) < lookback:
+        return False, {}
+    r = classify_vp_relationship(klines)
+    if r['type'] == '量减价升':
+        return True, {'label': r['label'], 'color': r['color'], 'score': r['score'], 'vp_type': r['type']}
+    return False, {}
+
+def pattern_vp_decrease_flat(klines, lookback=120):
+    """量减价平"""
+    if not klines or len(klines) < lookback:
+        return False, {}
+    r = classify_vp_relationship(klines)
+    if r['type'] == '量减价平':
+        return True, {'label': r['label'], 'color': r['color'], 'score': r['score'], 'vp_type': r['type']}
+    return False, {}
+
 # 所有模式列表: (name, display_name, func)
 ALL_PATTERNS = [
     ('consecutive_up', '连续上攻', pattern_consecutive_up),
@@ -714,6 +752,10 @@ ALL_PATTERNS = [
     ('one_limitup', '首板涨停', pattern_one_limitup),
     # ('pre_breakout', '潜在翻倍', pattern_pre_breakout),  # 已移除
     ('biasvol_buy', 'BIASVOL放量超卖', pattern_biasvol_buy),
+    ('vp_increase_flat', '量增价平', pattern_vp_increase_flat),
+    ('vp_increase_up', '量增价升', pattern_vp_increase_up),
+    ('vp_decrease_up', '量减价升', pattern_vp_decrease_up),
+    ('vp_decrease_flat', '量减价平', pattern_vp_decrease_flat),
     ('vp_confirm', '量价共振', pattern_vp_confirm),
     ('vp_divergence', '量价背离', pattern_vp_divergence),
 ]

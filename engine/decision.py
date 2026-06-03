@@ -517,6 +517,16 @@ def assess_capital_flow(code, market):
         score -= 7
         reasons.append(f"主力净占比{mpct:.1f}%(流出)")
 
+
+    # 量价关系形态加分
+    if klines and len(klines) >= 60:
+        try:
+            vpr = classify_vp_relationship(klines)
+            if vpr['score'] != 0:
+                score += vpr['score']
+                reasons.append(f"量价{vpr['type']}({vpr['label']})")
+        except:
+            pass
     score = max(0, min(100, score))
     return score, reasons
 

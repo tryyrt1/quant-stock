@@ -162,6 +162,52 @@ def calc_vp_correlation(closes, volumes, period=20):
     return result
 
 
+
+def classify_vp_relationship(klines, baseline=120, recent=20, vol_threshold=1.3, low_threshold=0.7):
+    """量价关系四形态分类"""
+    if len(klines) < baseline:
+        return {'type': '正常', 'label': '数据不足', 'color': 'gray', 'score': 0}
+    chunk = klines[-baseline:]
+    recent_chunk = chunk[-recent:]
+    avg_vol_baseline = sum(k['volume'] for k in chunk) / len(chunk)
+    avg_vol_recent = sum(k['volume'] for k in recent_chunk) / len(recent_chunk)
+    closes = [k['close'] for k in chunk]
+    recent_returns = []
+    for i in range(1, len(recent_chunk)):
+        prev_c = recent_chunk[i - 1]['close']
+        cur_c = recent_chunk[i]['close']
+        if prev_c > 0:
+            recent_returns.append((cur_c - prev_c) / prev_c * 100)
+    avg_return = sum(recent_returns) / len(recent_returns) if recent_returns else 0
+    all_high = max(k['high'] for k in chunk)
+    all_low = min(k['low'] for k in chunk)
+    cur_price = closes[-1]
+    price_pos = (cur_price - all_low) / (all_high - all_low) * 100 if all_high > all_low else 50
+    vol_ratio = avg_vol_recent / avg_vol_baseline if avg_vol_baseline > 0 else 1
+    increased = vol_ratio > vol_threshold
+    decreased = vol_ratio < low_threshold
+    price_up = avg_return >= 3
+    price_flat = avg_return < 3
+    is_low = price_pos < 30
+    is_high = price_pos > 70
+    if increased and price_flat:
+        if is_low:
+            return {'type': '量增价平', 'label': '低位吸筹，反转：低转高，买入', 'color': 'green', 'score': 10}
+        elif is_high:
+            return {'type': '量增价平', 'label': '高位出货，反转：高转低', 'color': 'red', 'score': -10}
+        return {'type': '量增价平', 'label': '量增价平(中位)', 'color': 'orange', 'score': 0}
+    if increased and price_up:
+        if is_high:
+            return {'type': '量增价升', 'label': '放量冲顶，警惕反转', 'color': 'red', 'score': -5}
+        if is_low:
+            return {'type': '量增价升', 'label': '持续买入', 'color': 'green', 'score': 15}
+        return {'type': '量增价升', 'label': '健康上涨，持续买入', 'color': 'green', 'score': 15}
+    if decreased and price_up:
+        return {'type': '量减价升', 'label': '缩量上涨，主力控盘好', 'color': 'orange', 'score': 5}
+    if decreased and price_flat:
+        return {'type': '量减价平', 'label': '缩量横盘，等待方向', 'color': 'orange', 'score': 0}
+    return {'type': '正常', 'label': '量价关系正常', 'color': 'gray', 'score': 0}
+
 def calc_support_resistance(kline):
     """
     计算压力位和支撑位
