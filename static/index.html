@@ -284,6 +284,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div id="page-predictions" class="hide">
     <div class="card">
       <div class="card-title">📈 预测统计</div>
+      <div id="closingSpike" style="margin-bottom:8px"></div>
       <div style="font-size:12px;color:#aaa;margin-bottom:10px">每天18个时间点(09:25~15:10, 15分钟间隔)记录信号，多日追踪验证，曲线图展示预测vs实际走势</div>
       <div id="predictionStats"><div class="loading" style="text-align:center;padding:20px"><span class="spinner"></span>加载中...</div></div>
     </div>
@@ -1112,6 +1113,29 @@ function renderReport(data, decision) {
 
   document.getElementById('reportContent').innerHTML = html
   renderMFC();
+  if (window._lastStockData && window._lastStockData.quote && window._lastStockData.quote.changePercent < -3) {
+    loadPlungeAnalysis(window._lastStockData.code, window._lastStockData.market || 'sh')
+  }
+}
+
+async function loadPlungeAnalysis(code, market) {
+  try {
+    const data = await api('/api/stock/' + code + '/plunge?market=' + market)
+    if (!data || !data.reasons || data.reasons.length === 0) return
+    var html = '<div class="card" style="margin-top:8px;border-left:3px solid #ff4757">' +
+      '<div class="card-title" style="color:#ff4757">🔍 下跌原因分析 (' + data.change_pct + '%)</div>'
+    if (data.summary) {
+      html += '<div style="font-size:11px;color:#eee;margin-bottom:6px;padding:4px 8px">' + data.summary + '</div>'
+    }
+    data.reasons.forEach(function(r) {
+      var ico = {'news':'📰','sector':'🧩','futures':'🛢️','volume':'📊','capital':'💰','technical':'📏'}
+      html += '<div style="padding:4px 6px;margin:3px 0;background:rgba(255,71,87,.05);border-radius:4px;font-size:11px">' +
+        '<span style="color:#ff4757;font-weight:600">' + (ico[r.dim]||'•') + ' ' + r.label + '</span>' +
+        '<span style="color:#ccc;margin-left:6px">' + r.detail + '</span></div>'
+    })
+    html += '</div>'
+    document.getElementById('reportContent').innerHTML += html
+  } catch(e) {}
 }
 
 // ===== 每日一股 =====
@@ -1569,6 +1593,82 @@ async function loadPredictions() {
     api('/api/predictions/stats'),
   ])
   renderWLPatterns(predict, ndStats)
+  updateClosingMonitor()
+}
+
+// 尾盘拉抬监控
+let _closingSpikes = []
+let _closingTimer = null
+
+async function updateClosingMonitor() {
+  const el = document.getElementById('closingSpike')
+  if (!el) return
+  const data = await api('/api/scan/closing')
+  if (!data) return
+
+  if (data.status === 'waiting') {
+    el.innerHTML = '<div style="font-size:11px;color:#555;text-align:center;padding:4px">⏰ ' + data.message + '</div>'
+    return
+  }
+  if (data.status === 'baseline') {
+    el.innerHTML = '<div style="font-size:11px;color:#888;text-align:center;padding:4px">⏰ ' + data.message + '</div>'
+    _closingSpikes = []
+    if (!_closingTimer) startClosingTimer()
+    return
+  }
+  if (data.status === 'active' || data.status === 'done') {
+    if (data.spikes) _closingSpikes = data.spikes
+    var count = _closingSpikes.length
+    var summary = ''
+    if (count > 0) {
+      summary = '<span style="color:#ff4757;font-weight:600">' + count + '只</span>'
+    } else {
+      summary = '<span style="color:#888">暂无</span>'
+    }
+    var listHtml = ''
+    if (count > 0) {
+      listHtml += '<div id="closingList" style="max-height:200px;overflow-y:auto;margin-top:4px">'
+      _closingSpikes.forEach(function(s) {
+        var sc = s.spike_pct >= 3 ? "#ff4757" : "#ffa502"
+        listHtml += '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.03)">' +
+          '<span>' + s.name + ' <span style="color:#888">' + s.code + '</span></span>' +
+          '<span style="color:' + sc + ';font-weight:600">+' + s.spike_pct + '% <span style="color:#888;font-weight:400">' + s.price + '</span></span></div>'
+      })
+      listHtml += '</div>'
+    }
+    var statusText = data.status === 'active' ? '监控中，每10秒更新' : data.message
+    var html = '<div style="background:rgba(255,71,87,.05);border-radius:6px;padding:6px 8px;font-size:11px;border-left:3px solid #ff4757;cursor:pointer" onclick="toggleClosingList(this)">' +
+      '<div style="display:flex;justify-content:space-between;color:#aaa">' +
+      '<span>🚀 尾盘拉抬 ' + summary + '</span>' +
+      '<span>' + timeStr() + ' | ' + (count > 0 ? '点击展开' : '') + '</span></div>' +
+      (count > 0 ? listHtml : '') +
+      '<div style="font-size:10px;color:#555;margin-top:2px">' + statusText + '</div></div>'
+    el.innerHTML = html
+
+    if (data.status === 'active' && !_closingTimer) startClosingTimer()
+    if (data.status === 'done' && _closingTimer) { clearInterval(_closingTimer); _closingTimer = null }
+  }
+}
+
+function startClosingTimer() {
+  if (_closingTimer) clearInterval(_closingTimer)
+  _closingTimer = setInterval(function() {
+    var now = new Date()
+    var h = now.getHours(), m = now.getMinutes()
+    var hm = h * 60 + m
+    if (hm >= 14 * 60 + 15 && hm <= 15 * 60) {
+      updateClosingMonitor()
+    } else {
+      clearInterval(_closingTimer)
+      _closingTimer = null
+    }
+  }, 10000)
+}
+
+function toggleClosingList(btn) { var el=document.getElementById('closingList'); if(el) el.style.display=el.style.display==='none'?'':'none'; }
+function timeStr() {
+  var d = new Date()
+  return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2) + ':' + ('0'+d.getSeconds()).slice(-2)
 }
 
 function renderWLPatterns(predict, ndStats) {

@@ -334,6 +334,7 @@ STATIC_STOCKS = [
 ]
 
 app = Flask(__name__, static_folder='static')
+app.secret_key = os.urandom(24).hex()
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 WATCHLIST_FILE = os.path.join(DATA_DIR, 'watchlist.json')
 REALTIME_CACHE = {}  # {code: {data, time}}
@@ -1919,6 +1920,251 @@ def scan_weekly_api():
             pass
 
     return jsonify({'patterns': patterns_out, 'count': len(patterns_out), 'stocks_matched': len(wk_map), 'total_scanned': len(candidates)})
+
+
+
+@app.route('/api/stock/<code>/plunge')
+def stock_plunge_api(code):
+    """下跌超3%原因分析"""
+    market = request.args.get('market', 'sh')
+    full_code = market + code
+
+    reasons = []
+
+    # 1. 获取基础数据
+    kline = fetch_kline(full_code, 120)
+    if not kline or len(kline) < 20:
+        return jsonify({'code': code, 'reasons': [], 'summary': '数据不足'})
+
+    closes = [k['close'] for k in kline]
+    cur_price = closes[-1]
+    change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
+
+    # 2. 新闻分析
+    try:
+        news = fetch_news(code, market)
+        if news:
+            neg_news = [n for n in news if analyze_sentiment([n])[0] < -0.2]
+            for n in neg_news[:3]:
+                reasons.append({'dim': 'news', 'label': '利空消息', 'detail': n.get('title', '')})
+    except:
+        pass
+
+    # 3. 板块表现
+    try:
+        snap_path = os.path.join(DATA_DIR, 'snapshots', 'sectors.json')
+        if os.path.exists(snap_path):
+            sectors = json.load(open(snap_path)).get('sectors', [])
+            for sec in sectors:
+                for stk in sec.get('stocks', []):
+                    if stk.get('code') == code and stk.get('market') == market:
+                        up = sec.get('up_count', 0)
+                        down = sec.get('down_count', 0)
+                        total = up + down
+                        if total > 0 and down / total > 0.6:
+                            reasons.append({'dim': 'sector', 'label': '板块拖累', 'detail': f'{sec.get("name","")}板块跌多涨少({down}/{total})'})
+                        break
+    except:
+        pass
+
+    # 4. 相关商品期货
+    try:
+        name_hint = ''
+        # Try to get stock name from quote
+        q = fetch_tencent_quote(full_code)
+        if q and q.get(code):
+            name_hint = q[code].get('name', '')
+        if not name_hint:
+            wl = load_watchlist()
+            for s in wl:
+                if s['code'] == code: name_hint = s.get('name', ''); break
+
+        keywords = {'铜':'沪铜伦铜COMEX铜', '铝':'沪铝伦铝', '锌':'沪锌伦锌', '镍':'沪镍伦镍',
+                    '铅':'沪铅伦铅', '锡':'沪锡伦锡', '金':'沪金COMEX黄金', '银':'沪银COMEX白银',
+                    '原油':'原油WTI原油', '油':'原油', '钢':'螺纹钢', '铁':'铁矿石'}
+        matched = []
+        for kw, futures_list in keywords.items():
+            if kw in name_hint:
+                matched.append(futures_list)
+        if matched:
+            reasons.append({'dim': 'futures', 'label': '商品期货', 'detail': '相关品种：' + '、'.join(matched) + '，具体涨跌需查看宏观商品页'})
+    except:
+        pass
+
+    # 5. 量价分析
+    try:
+        if len(kline) >= 20:
+            avg_vol = sum(k['volume'] for k in kline[-20:]) / 20
+            last_vol = kline[-1]['volume']
+            vol_ratio = last_vol / avg_vol if avg_vol > 0 else 1
+            if vol_ratio > 1.5:
+                reasons.append({'dim': 'volume', 'label': '放量杀跌', 'detail': f'今日量比{vol_ratio:.1f}倍，放量下跌'})
+            elif vol_ratio < 0.6:
+                reasons.append({'dim': 'volume', 'label': '缩量下跌', 'detail': f'今日量比{vol_ratio:.1f}倍，缩量下跌（抛压不大）'})
+    except:
+        pass
+
+    # 6. 资金流
+    try:
+        from engine.decision import assess_capital_flow
+        cap_score, cap_reasons = assess_capital_flow(code, market)
+        if cap_score < 40:
+            cap_detail = '；'.join(cap_reasons) if cap_reasons else '资金面偏空'
+            reasons.append({'dim': 'capital', 'label': '资金流出', 'detail': cap_detail})
+    except:
+        pass
+
+    # 7. 技术破位
+    try:
+        from engine.indicators import calc_support_resistance
+        sr = calc_support_resistance(kline)
+        if sr:
+            nearest_support = sr.get('nearest_support', 0)
+            if nearest_support > 0 and cur_price < nearest_support:
+                reasons.append({'dim': 'technical', 'label': '破位下跌', 'detail': f'跌破支撑{nearest_support:.2f}'})
+        # 均线破位
+        if len(closes) >= 60:
+            ma60 = sum(closes[-60:]) / 60
+            if closes[-2] > ma60 > cur_price:
+                reasons.append({'dim': 'technical', 'label': '破位下跌', 'detail': f'跌破MA60均线({ma60:.2f})'})
+    except:
+        pass
+
+    # 去重
+    seen = set()
+    unique = []
+    for r in reasons:
+        key = r['detail']
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+
+    # 生成摘要
+    dim_names = {'news':'利空','sector':'板块','futures':'商品','volume':'量价','capital':'资金','technical':'破位'}
+    summary_parts = [dim_names.get(r['dim'], r['dim']) for r in unique[:3]]
+    summary = '叠加'.join(summary_parts) if summary_parts else (f'下跌{abs(change_pct):.1f}%，无明显异常信号' if change_pct else '')
+
+    return jsonify({'code': code, 'market': market, 'change_pct': round(change_pct, 2),
+                    'reasons': unique, 'summary': summary or ''})
+CLOSING_DIR = os.path.join(DATA_DIR, 'closing')
+CLOSING_BASELINE = os.path.join(CLOSING_DIR, 'baseline.json')
+
+def _save_closing_baseline():
+    """14:15 快照股价基准"""
+    stocks = fetch_a_share_list()
+    if not stocks: return
+    candidates = [s for s in stocks if (s.get('change_pct', 0) or 0) < 9.5 and (s.get('pe', 0) or 0) >= 0]
+    candidates.sort(key=lambda x: abs(x.get('volume', 0) or 0), reverse=True)
+    candidates = candidates[:500]
+    codes_str = ','.join([s['market'] + s['code'] for s in candidates])
+    quotes = fetch_tencent_quote(codes_str) if codes_str else {}
+    baseline = {}
+    for s in candidates:
+        q = quotes.get(s['code'], {})
+        p = q.get('price', 0)
+        if p > 0:
+            baseline[s['code']] = {'name': s.get('name', s['code']), 'market': s['market'], 'price': p, 'snap_time': time.strftime('%H:%M:%S')}
+    os.makedirs(CLOSING_DIR, exist_ok=True)
+    with open(CLOSING_BASELINE, 'w', encoding='utf-8') as f:
+        json.dump({'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'baseline': baseline}, f)
+    print(f'[closing] 基准快照: {len(baseline)} 只')
+
+def _load_closing_baseline():
+    if not os.path.exists(CLOSING_BASELINE): return None
+    with open(CLOSING_BASELINE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+@app.route('/api/scan/closing')
+def closing_scan_api():
+    """尾盘拉抬监控"""
+    force = request.args.get('force', '0') == '1'
+    now = time.localtime()
+    hm = now.tm_hour * 60 + now.tm_min
+    today = time.strftime('%Y-%m-%d')
+    start_hm = 14 * 60 + 15
+    end_hm = 15 * 60
+
+    if hm < start_hm and not force:
+        return jsonify({'status': 'waiting', 'message': f'尾盘监控(14:15-15:00) 当前{now.tm_hour}:{now.tm_min:02d}'})
+
+    # 首次调用时快照
+    baseline_data = _load_closing_baseline()
+    if force or not baseline_data or baseline_data.get('time', '').split(' ')[0] != today:
+        _save_closing_baseline()
+        baseline_data = _load_closing_baseline()
+        if not baseline_data:
+            return jsonify({'status': 'error', 'message': '基准快照失败'})
+        return jsonify({'status': 'baseline', 'message': '基准已采集，下次刷新开始监控'})
+
+    baseline = baseline_data.get('baseline', {})
+    codes_str = ','.join([f"{v['market']}{k}" for k, v in baseline.items()])
+    quotes = fetch_tencent_quote(codes_str) if codes_str else {}
+
+    spikes = []
+    for code, b in baseline.items():
+        q = quotes.get(code, {})
+        cur = q.get('price', 0)
+        if cur <= 0: continue
+        spike_pct = (cur - b['price']) / b['price'] * 100
+        if 1 < spike_pct <= 5:
+            spikes.append({
+                'code': code, 'name': b.get('name', code),
+                'price': round(cur, 2), 'spike_pct': round(spike_pct, 2),
+                'base_price': round(b['price'], 2),
+            })
+
+    # 读取已有记录，去重累积
+    today_file = os.path.join(CLOSING_DIR, f'spikes_{today}.json')
+    all_spikes = []
+    if os.path.exists(today_file):
+        try:
+            with open(today_file, 'r', encoding='utf-8') as f:
+                all_spikes = json.load(f)
+        except:
+            all_spikes = []
+    exist_codes = set(s['code'] for s in all_spikes)
+    for s in spikes:
+        if s['code'] not in exist_codes:
+            all_spikes.append(s)
+            exist_codes.add(s['code'])
+
+    if spikes:
+        os.makedirs(CLOSING_DIR, exist_ok=True)
+        with open(today_file, 'w', encoding='utf-8') as f:
+            json.dump(all_spikes, f, ensure_ascii=False, indent=2)
+
+    if hm > end_hm:
+        return jsonify({'status': 'done', 'time': time.strftime('%H:%M:%S'), 'date': today,
+                        'spikes': all_spikes, 'message': f'收盘，共{len(all_spikes)}只尾盘拉抬'})
+
+    return jsonify({'status': 'active', 'time': time.strftime('%H:%M:%S'), 'date': today,
+                    'spikes': all_spikes})
+
+@app.route('/api/closing/history')
+def closing_history_api():
+    """尾盘拉抬历史"""
+    date = request.args.get('date', '')
+    if not date:
+        # 默认返回最近2天
+        today = time.strftime('%Y-%m-%d')
+        from datetime import timedelta
+        try:
+            td = time.localtime()
+            d1 = time.strftime('%Y-%m-%d', td)
+            d2 = time.strftime('%Y-%m-%d', time.localtime(time.mktime(td) - 86400))
+            dates = [d1, d2]
+        except:
+            dates = [today]
+    else:
+        dates = [date]
+    result = {}
+    for d in dates:
+        fp = os.path.join(CLOSING_DIR, f'spikes_{d}.json')
+        if os.path.exists(fp):
+            with open(fp, 'r', encoding='utf-8') as f:
+                result[d] = json.load(f)
+    return jsonify(result)
+
 
 
 @app.route('/api/dailypick')
