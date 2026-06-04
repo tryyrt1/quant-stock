@@ -117,7 +117,13 @@ def assess_weekly(weekly_kline):
     r5 = check_consolidation(weekly_kline)
     r6 = check_volume_harmony(weekly_kline)
     r7 = check_ma_converge_spread(weekly_kline)
-    total = r1['score'] + r2['score'] + r3['score'] + r4['score'] + r5['score'] + r6['score'] + r7['score']
+    r8 = check_weekly_macd(weekly_kline)
+    r9 = check_ma10_trend(weekly_kline)
+    r10 = check_bullish_alignment(weekly_kline)
+    r11 = check_rsi_divergence(weekly_kline)
+    r12 = check_volume_stack(weekly_kline)
+    r13 = check_macd_ma_resonance(weekly_kline)
+    total = r1['score'] + r2['score'] + r3['score'] + r4['score'] + r5['score'] + r6['score'] + r7['score'] + r8['score'] + r9['score'] + r10['score'] + r11['score'] + r12['score'] + r13['score']
     total = min(100, max(0, total))
     # 汇总文本
     parts = []
@@ -135,6 +141,15 @@ def assess_weekly(weekly_kline):
         parts.append(f'横盘{r5["amplitude"]}%')
     if r6['harmony']:
         parts.append('量价温和')
+    if r8.get('golden_cross'):
+        parts.append('MACD金叉')
+        if r8.get('second_gc'): parts[-1] = 'MACD二次金叉'
+    if r9.get('ma10_up'): parts.append('10周线上翘')
+    if r10.get('aligned'): parts.append('多头排列')
+    if r11.get('divergence'): parts.append('底背离')
+    if r12.get('stacking'): parts.append('堆量')
+    if r12.get('spike'): parts.append('倍量')
+    if r13.get('resonance'): parts.append('MACD+均线共振')
     summary = ' · '.join(parts) if parts else '无明显周线信号'
     return {
         'score': total,
@@ -147,6 +162,12 @@ def assess_weekly(weekly_kline):
             'consolidation': r5,
             'volume_harmony': r6,
             'ma_converge_spread': r7,
+            'macd': r8,
+            'ma10': r9,
+            'alignment': r10,
+            'rsi_divergence': r11,
+            'volume_stack': r12,
+            'macd_ma_resonance': r13,
         },
     }
 
@@ -167,3 +188,66 @@ def check_ma_converge_spread(weekly_kline):
         return {'converge_spread': True, 'ma5': round(ma5, 2), 'ma10': round(ma10, 2),
                 'ma20': round(ma20, 2), 'spread': round(spread * 100, 1), 'score': 20}
     return {'converge_spread': False, 'score': 0}
+
+
+def check_weekly_macd(weekly_kline):
+    """周线MACD金叉/二次金叉"""
+    from engine.indicators import calc_macd
+    closes = [k['close'] for k in weekly_kline]
+    if len(closes) < 30: return {'golden_cross':False,'zero_above':False,'second_gc':False,'score':0}
+    macd = calc_macd(closes)
+    dif = macd['dif'][-1] or 0; dea = macd['dea'][-1] or 0
+    dif_p = (macd['dif'] or [0])[-2] or 0; dea_p = (macd['dea'] or [0])[-2] or 0
+    gc = dif_p < dea_p and dif >= dea
+    za = dif > 0 and dea > 0
+    sg = False
+    if len(closes) >= 60:
+        ds = macd['dif']; es = macd['dea']
+        hp = False
+        for i in range(-30, -2):
+            if all(v is not None for v in [ds[i-1], ds[i], es[i-1], es[i]]):
+                if ds[i-1] < es[i-1] and ds[i] >= es[i]: hp = True
+        sg = hp and gc and za
+    sc = (5 if gc else 0) + (5 if za and gc else 0) + (10 if sg else 0)
+    return {'golden_cross':gc,'zero_above':za,'second_gc':sg,'score':min(15,sc),'dif':round(dif,3),'dea':round(dea,3)}
+
+def check_ma10_trend(weekly_kline):
+    closes = [k['close'] for k in weekly_kline]
+    if len(closes) < 12: return {'ma10_up':False,'price_above_ma10':False,'score':0}
+    mn = sum(closes[-10:])/10; mp = sum(closes[-11:-1])/10 if len(closes)>=11 else mn
+    up = mn > mp * 1.002; ab = closes[-1] > mn
+    return {'ma10_up':up,'price_above_ma10':ab,'ma10':round(mn,2),'score':(10 if up else 0)+(5 if ab else 0)}
+
+def check_bullish_alignment(weekly_kline):
+    closes = [k['close'] for k in weekly_kline]
+    if len(closes) < 35: return {'aligned':False,'score':0}
+    m5=sum(closes[-5:])/5;m10=sum(closes[-10:])/10;m20=sum(closes[-20:])/20;m30=sum(closes[-30:])/30
+    al=m5>m10>m20>m30; sp=(m5-m30)/m30*100 if m30 else 0
+    return {'aligned':al,'ma5':round(m5,2),'ma10':round(m10,2),'ma20':round(m20,2),'ma30':round(m30,2),'spread':round(sp,1),'score':15 if al else 0}
+
+def check_rsi_divergence(weekly_kline):
+    from engine.indicators import calc_rsi
+    closes = [k['close'] for k in weekly_kline]
+    if len(closes) < 30: return {'oversold':False,'overbought':False,'divergence':False,'score':0,'rsi':50}
+    ra=calc_rsi(closes,14);rsi=ra[-1] if ra[-1] is not None else 50
+    os=rsi<30;ob=rsi>70;dvg=False
+    if len(closes)>=20 and ra[-(20)] is not None:
+        if closes[-1] < closes[-20]*0.95 and rsi > ra[-(20)]*1.05: dvg=True
+    sc=(5 if os else 0)+(5 if ob else 0)+(10 if dvg else 0)
+    return {'oversold':os,'overbought':ob,'divergence':dvg,'rsi':round(rsi,1),'score':min(15,sc)}
+
+def check_volume_stack(weekly_kline):
+    if len(weekly_kline) < 25: return {'stacking':False,'spike':False,'score':0}
+    vols=[k['volume'] for k in weekly_kline];avg=sum(vols[-20:])/20
+    sk=vols[-3]<vols[-2]<vols[-1];sp=vols[-1]>avg*3
+    return {'stacking':sk,'spike':sp,'ratio':round(vols[-1]/avg,2) if avg>0 else 1,'score':(8 if sk else 0)+(7 if sp else 0)}
+
+def check_macd_ma_resonance(weekly_kline):
+    from engine.indicators import calc_macd
+    closes=[k['close'] for k in weekly_kline]
+    if len(closes)<12: return {'resonance':False,'score':0}
+    macd=calc_macd(closes);dif=macd['dif'][-1] or 0;dea=macd['dea'][-1] or 0
+    dif_p=(macd['dif'] or [0])[-2] or 0;dea_p=(macd['dea'] or [0])[-2] or 0
+    m5=sum(closes[-5:])/5;m10=sum(closes[-10:])/10;m5p=sum(closes[-6:-1])/5
+    mgc=dif_p<dea_p and dif>=dea;agc=m5p<m10 and m5>=m10
+    return {'resonance':mgc and agc,'macd_gc':mgc,'ma_gc':agc,'score':10 if(mgc and agc) else 0}

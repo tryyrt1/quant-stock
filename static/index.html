@@ -404,7 +404,7 @@ function renderPatterns() {
 
   // 按模式名称分组
   const grouped = {}
-  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '量增价平', '量增价升', '量减价升', '量减价平', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停']
+  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '周线金叉', '周线二次金叉', '周线底背离', '周线放量突破', '量增价平', '量增价升', '量减价升', '量减价平', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停']
 
   patterns.forEach(p => {
     if (!grouped[p.pattern_name]) grouped[p.pattern_name] = []
@@ -501,7 +501,7 @@ async function scanMarket() {
   const btn = document.getElementById('btnMarketScan')
   btn.innerHTML = '<span class="spinner"></span>扫描全市场...'
   btn.disabled = true
-  document.getElementById('marketScanInfo').textContent = '获取股票列表并分析形态，约需30-60秒...'
+  document.getElementById('marketScanInfo').textContent = '正在扫描500只活跃股，约需30-60秒...'
 
   const data = await apiPost('/api/scan/market', {})
   let allPatterns = (data && data.patterns) ? data.patterns : []
@@ -1139,6 +1139,7 @@ function renderDailyPick(data) {
       '<div style="text-align:center;padding:30px;color:var(--dim)">暂无推荐数据</div>'
     return
   }
+  const scanned = data.scanned_count || 500
   const isMorning = data.period === 'morning'
   const periodLabel = isMorning ? '今日推荐' : '明日前瞻'
   const periodIcon = isMorning ? '⭐' : '🔮'
@@ -1184,7 +1185,8 @@ function renderDailyPick(data) {
     '<div style="font-size:12px">' +
     '<div style="text-align:center;margin-bottom:12px"><span style="font-size:22px">' + periodIcon + '</span>' +
     '<div style="font-size:16px;font-weight:700;color:var(--accent);margin-top:4px">' + periodLabel + '</div>' +
-    '<div style="font-size:10px;color:#666;margin-top:2px">有效期: ' + data.valid_from + ' ~ ' + data.valid_until + '</div></div>' +
+    '<div style="font-size:10px;color:#666;margin-top:2px">有效期: ' + data.valid_from + ' ~ ' + data.valid_until + '</div>' +
+      '<div style="font-size:10px;color:#555;margin-top:2px">从 ' + scanned + ' 只股票中选出</div></div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:rgba(255,255,255,.03);border-radius:6px">' +
     '<div><span style="font-size:18px;font-weight:700">' + p.name + '</span>' +
     '<span style="font-size:11px;color:#888;margin-left:8px">' + p.code + '</span></div>' +
@@ -1201,7 +1203,7 @@ function renderDailyPick(data) {
     (srHtml ? '<div style="margin-top:8px;padding:8px;background:rgba(255,255,255,.02);border-radius:4px;text-align:center">' + srHtml + '</div>' : '') +
     riskHtml +
     wkHtml +
-    '<div style="text-align:center;font-size:10px;color:#555;margin-top:12px">计算时间: ' + (data.computed_at || '--') + '</div></div>'
+    '<div style="text-align:center;font-size:10px;color:#555;margin-top:12px">扫描' + scanned + '只 · ' + (data.computed_at || '--') + '</div></div>'
   document.getElementById('dailypickContent').innerHTML = html
 }
 
@@ -1540,8 +1542,10 @@ async function loadSnapshots() {
   const t = tab.dataset.tab
 
   if (t === 'patterns') {
-    const snapPats = (data.patterns && data.patterns.patterns) ? data.patterns.patterns : []
-    state.patterns = snapPats
+    if (!state.patterns || state.patterns.length === 0) {
+      const snapPats = (data.patterns && data.patterns.patterns) ? data.patterns.patterns : []
+      state.patterns = snapPats
+    }
     renderPatterns()
     const info = document.getElementById('marketScanInfo')
     if (info) {
@@ -2078,11 +2082,20 @@ function showTechScore(data) {
   html += '<div style="text-align:center;margin-bottom:10px"><span style="color:'+scoreColor+';font-size:14px;font-weight:bold;background:'+scoreColor+'22;padding:4px 16px;border-radius:4px">操作建议: ' + advice + '</span></div>';
   html += bar(trendScore, '趋势', 0) + bar(momentumScore, '动量', 1) + bar(volumeScore, '量能', 2) + bar(stabilityScore, '稳定', 3);
 
-  // 量价关系（从API读取后端分类结果）
-  var _vp_d = window._lastStockData && window._lastStockData.vp;
-  if (_vp_d && _vp_d.label) {
-    var _vp_c = _vp_d.color === 'red' ? '#ff4757' : _vp_d.color === 'green' ? '#2ed573' : _vp_d.color === 'orange' ? '#ffa502' : '#888';
-    html += '<div style="margin-top:4px;color:' + _vp_c + ';font-size:12px">📊 量价：' + _vp_d.label + '</div>';
+  // 量价关系（双版本）
+  var _vp_all = window._lastStockData && window._lastStockData.vp;
+  if (_vp_all) {
+    ['daily','weekly'].forEach(function(_vk) {
+      var _vd = _vp_all[_vk];
+      if (_vd && _vd.label) {
+        var _vc = _vd.color === 'red' ? '#ff4757' : _vd.color === 'green' ? '#2ed573' : _vd.color === 'orange' ? '#ffa502' : '#888';
+        var _vl = _vk === 'daily' ? '量价(20/120)' : '量价(5/5)';
+        html += '<div style="margin-top:3px;color:' + _vc + ';font-size:12px">📊 ' + _vl + '：' + _vd.label + '</div>';
+        if (_vd.reason) {
+          html += '<div style="font-size:10px;color:#888;margin-left:16px">' + _vd.reason + '</div>';
+        }
+      }
+    });
   }
   html += '</div>';
 
@@ -2158,6 +2171,14 @@ async function loadWeeklyAnalysis(code, market) {
     html += row('阳包阴', s.engulfing?.engulfing, '')
     html += row('长时间横盘', s.consolidation?.consolidation, s.consolidation?.amplitude ? '振幅' + s.consolidation.amplitude + '%' : '')
     html += row('量价温和', s.volume_harmony?.harmony, s.volume_harmony?.correlation != null ? 'r=' + s.volume_harmony.correlation : '')
+    html += row('MACD金叉', s.macd?.golden_cross, s.macd?.golden_cross ? 'DIF='+s.macd.dif+' DEA='+s.macd.dea : '')
+    html += row('MACD二次金叉', s.macd?.second_gc, '零轴上方二次金叉')
+    html += row('10周线上翘', s.ma10?.ma10_up, s.ma10?.ma10_up ? 'MA10='+s.ma10.ma10 : '')
+    html += row('均线多头排列', s.alignment?.aligned, s.alignment?.aligned ? '5>10>20>30' : '')
+    html += row('RSI底背离', s.rsi_divergence?.divergence, s.rsi_divergence?.rsi != null ? 'RSI='+s.rsi_divergence.rsi : '')
+    html += row('堆量', s.volume_stack?.stacking, s.volume_stack?.ratio ? '周量比'+s.volume_stack.ratio : '')
+    html += row('立桩量', s.volume_stack?.spike, s.volume_stack?.ratio ? '周量'+s.volume_stack.ratio+'倍' : '')
+    html += row('MACD+均线共振', s.macd_ma_resonance?.resonance, '')
     html += '<div style="margin-top:6px;padding:6px;text-align:center;background:rgba(0,0,0,.15);border-radius:4px">' +
       '<span style="color:#00d2ff;font-size:16px;font-weight:700">' + data.score + '</span>' +
       '<span style="color:#888;font-size:11px;margin-left:6px">/ 100</span></div>'
@@ -2424,7 +2445,7 @@ function renderCommodity(data) {
 // ===================== Init =====================
 loadWatchlist()
 // Auto-refresh every 30 seconds
-setInterval(scanWatchlist, 30000)
+setInterval(scanWatchlist, 210000)  // 3.5分钟
 // Auto-refresh news every 60 seconds
 setInterval(refreshWatchlistNews, 60000)
 setTimeout(refreshWatchlistNews, 2000)  // initial fetch after 2s

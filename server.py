@@ -3,6 +3,22 @@ import json, os, socket, re, time, threading, shutil, subprocess
 from datetime import datetime
 from flask import Flask, jsonify, request, Response, send_from_directory
 
+import hashlib
+from flask import session, redirect, url_for
+from functools import wraps
+
+APP_PASSWORD = os.environ.get('APP_PASSWORD', 'changeme')
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('auth') or session.get('auth') != hashlib.md5(APP_PASSWORD.encode()).hexdigest():
+            if request.path.startswith('/api/'):
+                return jsonify({'error': '需要密码认证，请在首页输入密码'}), 401
+            return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return decorated
+
 # ─── 数据源配置 ───
 DATA_SOURCE = "auto"  # auto | tencent | baostock
 BAOSTOCK_INSTALLED = False
@@ -395,9 +411,32 @@ def get_local_ip():
 
 # =================== API 路由 ===================
 
+@app.route('/login', methods=['GET', 'POST'])
+def login_page():
+    if request.method == 'POST':
+        pwd = request.form.get('password', '')
+        if pwd == APP_PASSWORD:
+            session['auth'] = hashlib.md5(APP_PASSWORD.encode()).hexdigest()
+            return redirect('/')
+        return '<html><body style="background:#1a1a3e;color:#fff;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh"><div style="text-align:center"><h2>密码错误</h2><a href="/login" style="color:#00d2ff">重新输入</a></div></body></html>'
+    return '''<html><body style="background:#1a1a3e;color:#fff;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh">
+<form method="post" style="text-align:center;padding:40px;background:rgba(255,255,255,.05);border-radius:12px">
+<h2 style="margin-bottom:20px">AI 量化选股系统</h2>
+<input type="password" name="password" placeholder="请输入密码" style="padding:10px 20px;font-size:16px;border:1px solid #333;border-radius:6px;background:#222;color:#fff;width:200px">
+<br><br>
+<button type="submit" style="padding:10px 40px;font-size:16px;background:#00d2ff;color:#000;border:none;border-radius:6px;cursor:pointer">进入</button>
+</form></body></html>'''
+
 @app.route('/')
+@require_auth
 def index():
     resp = send_from_directory('static', 'index.html')
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
+
+    return '', 204
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
@@ -514,12 +553,15 @@ def stock_detail(code):
     except:
         pass
 
-    # 量价关系
+    # 量价关系（双版本）
     vp_result = {}
     if len(kline) >= 60:
         try:
-            from engine.indicators import classify_vp_relationship
-            vp_result = classify_vp_relationship(kline)
+            from engine.indicators import classify_vp_relationship, classify_vp_weekly
+            vp_result = {
+                'daily': classify_vp_relationship(kline),
+                'weekly': classify_vp_weekly(kline) if len(kline) >= 10 else {'type':'正常','label':'数据不足','color':'gray'},
+            }
         except:
             pass
 
@@ -1714,7 +1756,7 @@ def scan_market_api():
     total = len(stocks)
     # 按成交量排序，取前200只最活跃的，排除涨停/涨幅过大的
     stocks.sort(key=lambda x: abs(x.get('volume', 0)), reverse=True)
-    candidates = [s for s in stocks[:300] if (s.get('change_pct', 0) or 0) < 7 and (s.get('pe', 0) or 0) >= 0][:200]
+    candidates = [s for s in stocks[:500] if (s.get('change_pct', 0) or 0) < 7 and (s.get('pe', 0) or 0) >= 0][:500]
 
     import concurrent.futures
     def fetch_kline_for_stock(s):
@@ -1736,7 +1778,7 @@ def scan_market_api():
 
     candidate_lookup = {s['code']: s for s in candidates}
     # real-time quote from Tencent for accurate change_pct
-    qcodes = ','.join([s['market'] + s['code'] for s in candidates[:200]])
+    qcodes = ','.join([s['market'] + s['code'] for s in candidates[:500]])
     if qcodes:
         try:
             import requests as _rq
@@ -1799,7 +1841,7 @@ def scan_weekly_api():
         return jsonify({'patterns': [], 'count': 0})
     candidates = [s for s in stocks if (s.get('change_pct', 0) or 0) < 9.5 and (s.get('pe', 0) or 0) >= 0]
     candidates.sort(key=lambda x: abs(x.get('volume', 0) or 0), reverse=True)
-    candidates = candidates[:200]
+    candidates = candidates[:500]
 
     import concurrent.futures
     def fetch_wk(s):
@@ -1843,6 +1885,34 @@ def scan_weekly_api():
                         'code': code, 'market': s['market'], 'name': s.get('name', code),
                         'pattern_key': 'weekly_converge_spread', 'pattern_name': '周线粘合向上发散',
                         'label': f'MA5:{cs["ma5"]} MA10:{cs["ma10"]} MA20:{cs["ma20"]}', 'risk': risk,
+                        'change_pct': round(chg, 2), 'detail': {},
+                    })
+                if r['signals'].get('macd', {}).get('golden_cross'):
+                    patterns_out.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'pattern_key': 'weekly_macd_gc', 'pattern_name': '周线金叉',
+                        'label': 'MACD周线金叉', 'risk': risk,
+                        'change_pct': round(chg, 2), 'detail': {},
+                    })
+                if r['signals'].get('macd', {}).get('second_gc'):
+                    patterns_out.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'pattern_key': 'weekly_macd_sgc', 'pattern_name': '周线二次金叉',
+                        'label': 'MACD零轴上方二次金叉', 'risk': risk,
+                        'change_pct': round(chg, 2), 'detail': {},
+                    })
+                if r['signals'].get('rsi_divergence', {}).get('divergence'):
+                    patterns_out.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'pattern_key': 'weekly_divergence', 'pattern_name': '周线底背离',
+                        'label': 'RSI底背离', 'risk': risk,
+                        'change_pct': round(chg, 2), 'detail': {},
+                    })
+                if r['signals'].get('volume_stack', {}).get('spike'):
+                    patterns_out.append({
+                        'code': code, 'market': s['market'], 'name': s.get('name', code),
+                        'pattern_key': 'weekly_spike', 'pattern_name': '周线放量突破',
+                        'label': f"周量{r['signals']['volume_stack']['ratio']}倍", 'risk': risk,
                         'change_pct': round(chg, 2), 'detail': {},
                     })
         except:
@@ -1938,7 +2008,7 @@ def export_market():
 
     total = len(stocks)
     stocks.sort(key=lambda x: abs(x.get('volume', 0)), reverse=True)
-    candidates = [s for s in stocks[:300] if (s.get('change_pct', 0) or 0) < 7 and (s.get('pe', 0) or 0) >= 0][:200]
+    candidates = [s for s in stocks[:500] if (s.get('change_pct', 0) or 0) < 7 and (s.get('pe', 0) or 0) >= 0][:500]
 
     import concurrent.futures
     def fetch_kline_for_stock(s):
@@ -2448,6 +2518,7 @@ def compute_daily_pick(period='morning'):
             'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
             'status': 'ready', 'pick': pick,
             'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'scanned_count': len(kline_map),
         }
         os.makedirs(os.path.dirname(DAILYPICK_FILE), exist_ok=True)
         with open(DAILYPICK_FILE, 'w', encoding='utf-8') as f:
