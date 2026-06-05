@@ -920,7 +920,7 @@ def verify_nextday_predictions(fetch_kline_func):
     return verified
 
 def get_nextday_stats():
-    """返回自选股次日预测统计"""
+    """返回自选股次日预测统计，含个股独立准确率"""
     data = _load_nextday()
     today = time.strftime('%Y-%m-%d')
     today_pred = [r for r in data if r.get('date') == today]
@@ -928,12 +928,26 @@ def get_nextday_stats():
     correct_count = sum(1 for r in verified if r['correct'])
     total = len(verified)
 
+    stock_stats = {}
+    for r in data:
+        if not r.get('verified') or r.get('correct') is None:
+            continue
+        code = r['code']
+        if code not in stock_stats:
+            stock_stats[code] = {'correct': 0, 'total': 0, 'name': r.get('name', code)}
+        stock_stats[code]['total'] += 1
+        if r['correct']:
+            stock_stats[code]['correct'] += 1
+    for code, s in stock_stats.items():
+        s['accuracy'] = round(s['correct'] / s['total'] * 100, 1) if s['total'] > 0 else 0
+
     return {
         'today_predictions': [{
             'code': r['code'], 'name': r.get('name', r['code']),
-            'direction': r.get('direction'), 'confidence': r.get('confidence', 0),
+            'direction': r.get('direction'),
             'signal': r.get('signal'), 'score': r.get('score'),
         } for r in today_pred],
+        'stock_stats': stock_stats,
         'correct': correct_count,
         'total': total,
         'accuracy': round(correct_count / total * 100, 1) if total > 0 else 0,

@@ -524,7 +524,16 @@ def assess_capital_flow(code, market):
             vpr = classify_vp_relationship(klines)
             if vpr['score'] != 0:
                 score += vpr['score']
-                reasons.append(f"量价{vpr['type']}({vpr['label']})")
+            reasons.append(f"量价{vpr['type']}({vpr['label']})")
+        except:
+            pass
+    # 残差动量
+    if len(closes) >= 60:
+        try:
+            rm = calc_residual_momentum(closes)
+            if rm['score'] != 0:
+                score += rm['score']
+                reasons.append(f"残差动量({rm['score']:+d})")
         except:
             pass
     score = max(0, min(100, score))
@@ -591,6 +600,31 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
             seen.add(r)
             all_reasons.append(r)
 
+    # ML评分（若模型存在则覆盖）
+    try:
+        from engine.ml_scorer import score as ml_score, is_ready as ml_ready, get_raw_fields
+        if ml_ready():
+            details_last = details_list[-1] if details_list else {}
+            ml_f = {
+                'trend': details_last.get('score', 50),
+                'patterns': details.get('patterns', {}).get('score', 50),
+                'price_level': details.get('price_level', {}).get('score', 50),
+                'volume': details.get('volume', {}).get('score', 50),
+                'sector': details.get('sector', {}).get('score', 50),
+                'intraday': details.get('intraday', {}).get('score', 50),
+                'capital': details.get('capital', {}).get('score', 50),
+                'total_score': total_score,
+                'signal': signal,
+            }
+            raw_f = get_raw_fields(klines, quote) if klines is not None else None
+            ml_s = ml_score(ml_f, raw_f)
+            if ml_s is not None:
+                blended = int(ml_s * 0.7 + total_score * 0.3)
+                total_score = max(0, min(100, blended))
+                signal = score_to_signal(total_score)
+    except:
+        pass
+    
     return {
         "signal": signal,
         "sub": sub,

@@ -292,9 +292,13 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   </div>
 
   <div class="disclaimer">数据仅供参考，不构成投资建议 | 腾讯财经/东方财富</div>
+
   <div class="disclaimer" style="color:#555;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:0">China.柳州.Guoa</div>
 </div>
 
+<div style="font-size:10px;color:#00d2ff;padding:4px 10px;background:rgba(0,210,255,.04);border-bottom:1px solid rgba(0,210,255,.1)" id="statusBar">
+  系统: <span id="statusText">加载中...</span>
+</div>
 <div class="tabbar">
   <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
   <div class="tab" data-tab="dailypick" onclick="switchTab('dailypick');loadDailyPick()"><span class="tab-icon">⭐</span>每日一股</div>
@@ -1152,83 +1156,69 @@ async function loadDailyPick() {
 }
 
 function renderDailyPick(data) {
-  if (data.status === 'computing') {
-    document.getElementById('dailypickContent').innerHTML =
-      '<div style="text-align:center;padding:30px"><span class="spinner"></span>全市场扫描计算中（约30秒）...</div>'
+  if (data.status === "computing") {
+    document.getElementById("dailypickContent").innerHTML =
+      "<div style=\"text-align:center;padding:30px\"><span class=\"spinner\"></span>全市场扫描计算中（约30秒）...</div>"
     return
   }
-  const p = data.pick
-  if (!p) {
-    document.getElementById('dailypickContent').innerHTML =
-      '<div style="text-align:center;padding:30px;color:var(--dim)">暂无推荐数据</div>'
+  const picks = data.picks || []
+  if (!picks.length) {
+    document.getElementById("dailypickContent").innerHTML =
+      "<div style=\"text-align:center;padding:30px;color:var(--dim)\">暂无推荐数据</div>"
     return
   }
   const scanned = data.scanned_count || 500
-  const isMorning = data.period === 'morning'
-  const periodLabel = isMorning ? '今日推荐' : '明日前瞻'
-  const periodIcon = isMorning ? '⭐' : '🔮'
-  const sig = p.signal || '持有'
-  const cls = sig === '买入' ? 'badge-buy' : sig === '增持' ? 'badge-watch' : sig === '持有' ? 'badge-hold' : 'badge-sell'
-  const chg = p.change_pct || 0
-  const chgCls = chg >= 0 ? 'up' : 'down'
-  const chgSign = chg >= 0 ? '+' : ''
-  const dimLabels = {'trend':'趋势','patterns':'形态','price_level':'价位','volume':'量能','sector':'板块','intraday':'分时','capital':'资金'}
-  const dimIcons = {'trend':'📈','patterns':'🎯','price_level':'💰','volume':'📊','sector':'🧩','intraday':'⏱','capital':'💵'}
-  let dimHtml = ''
-  for (const [key, label] of Object.entries(dimLabels)) {
-    const d = p.details && p.details[key]
-    if (!d) continue
-    const s = d.score || 0
-    const sig2 = d.signal || '持有'
-    const barW = Math.min(100, Math.max(5, s))
-    const barC = s >= 75 ? '#2ed573' : s >= 60 ? '#ffa502' : s >= 45 ? '#ffd93d' : '#ff4757'
-    const reasons = d.reasons && d.reasons.length ? d.reasons.join('；') : ''
-    dimHtml += '<div style="margin:6px 0;padding:6px 8px;background:rgba(255,255,255,.02);border-radius:4px">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">' +
-      '<span style="font-size:11px;color:#ccc">' + (dimIcons[key]||'') + ' ' + label + '</span>' +
-      '<span style="font-size:11px;color:' + barC + ';font-weight:700">' + sig2 + ' ' + s + '</span></div>' +
-      '<div style="height:4px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden">' +
-      '<div style="height:100%;width:' + barW + '%;background:' + barC + ';border-radius:2px"></div></div>' +
-      (reasons ? '<div style="font-size:10px;color:#888;margin-top:2px">' + reasons + '</div>' : '') + '</div>'
+  const isMorning = data.period === "morning"
+  const periodLabel = isMorning ? "今日推荐" : "明日前瞻"
+  const periodIcon = isMorning ? "⭐" : "🔮"
+  const dimLabels = {trend:"趋势",patterns:"形态",price_level:"价位",volume:"量能",sector:"板块",intraday:"分时",capital:"资金"}
+  const dimIcons = {trend:"📈",patterns:"🎯",price_level:"💰",volume:"📊",sector:"🧩",intraday:"⏱",capital:"💵"}
+
+  function pickCard(p, idx) {
+    const sig = p.signal || "持有"
+    const cls = sig === "买入" ? "badge-buy" : sig === "增持" ? "badge-watch" : sig === "持有" ? "badge-hold" : "badge-sell"
+    const chg = p.change_pct || 0; const chgCls = chg >= 0 ? "up" : "down"; const chgSign = chg >= 0 ? "+" : ""
+    let dimHtml = ""
+    for (const [key, label] of Object.entries(dimLabels)) {
+      const d = p.details && p.details[key]; if (!d) continue
+      const s = d.score || 0; const sig2 = d.signal || "持有"
+      const barW = Math.min(100, Math.max(5, s))
+      const barC = s >= 75 ? "#2ed573" : s >= 60 ? "#ffa502" : s >= 45 ? "#ffd93d" : "#ff4757"
+      const reasons = d.reasons && d.reasons.length ? d.reasons.join("；") : ""
+      dimHtml += "<div style=\"margin:4px 0;padding:4px 6px;background:rgba(255,255,255,.02);border-radius:4px\">" +
+        "<div style=\"display:flex;justify-content:space-between;align-items:center\">" +
+        "<span style=\"font-size:10px;color:#ccc\">" + (dimIcons[key]||"") + " " + label + "</span>" +
+        "<span style=\"font-size:10px;color:" + barC + ";font-weight:600\">" + sig2 + " " + s + "</span></div>" +
+        "<div style=\"height:3px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden\">" +
+        "<div style=\"height:100%;width:" + barW + "%;background:" + barC + ";border-radius:2px\"></div></div>" +
+        (reasons ? "<div style=\"font-size:9px;color:#888;margin-top:1px\">" + reasons + "</div>" : "") + "</div>"
+    }
+    const wk = p.weekly_signals || {}
+    const wkTxt = wk.score != null ? " 📅周线" + wk.score : ""
+    const vp = p.vp || {}
+    const vpTxt = vp.label ? " 📊量价:" + vp.label : ""
+    const riskTxt = p.risk_warning ? "<div style=\"font-size:10px;color:#ffa502;margin-top:4px\">⚠️" + p.risk_warning + "</div>" : ""
+    return "<div class=\"card\" style=\"padding:10px;margin-bottom:6px\">" +
+      "<div style=\"display:flex;justify-content:space-between;align-items:center\">" +
+      "<div><span style=\"font-size:15px;font-weight:700\">" + p.name + "</span>" +
+      "<span style=\"font-size:10px;color:#888;margin-left:6px\">" + p.code + "</span></div>" +
+      "<div style=\"text-align:right\"><span style=\"font-size:15px;font-weight:700\">" + p.price + "</span>" +
+      "<span class=\"" + chgCls + "\" style=\"font-size:11px;margin-left:4px\">" + chgSign + chg + "%</span></div></div>" +
+      "<div style=\"text-align:center;margin:6px 0\">" +
+      "<span class=\"badge " + cls + "\" style=\"font-size:14px;padding:4px 16px\">" + sig + " " + p.score + "</span>" +
+      "<span style=\"font-size:10px;color:#888;margin-left:8px\">" + p.method_agree + "/" + p.total_methods + "方法一致" + wkTxt + vpTxt + "</span></div>" +
+      (dimHtml ? "<div style=\"margin-top:6px;padding:6px;background:rgba(0,0,0,.1);border-radius:4px\">" + dimHtml + "</div>" : "") +
+      riskTxt + "</div>"
   }
-  const patHtml = p.patterns_found && p.patterns_found.length
-    ? '<div style="font-size:11px;margin:6px 0;color:#aaa">📐 检出形态：' + p.patterns_found.join(' · ') + '</div>' : ''
-  const reasonsHtml = p.top_reasons && p.top_reasons.length
-    ? '<ul style="margin:4px 0;padding-left:16px;font-size:11px;color:#ddd">' +
-      p.top_reasons.map(r => '<li>' + r + '</li>').join('') + '</ul>' : ''
-  const sr = p.sr || {}
-  const srHtml = (sr.support || sr.resistance)
-    ? '<div style="font-size:11px;color:#888;margin-top:6px">支撑 ' + (sr.support||'--') + ' | 压力 ' + (sr.resistance||'--') + '</div>' : ''
-  const riskHtml = p.risk_warning
-    ? '<div style="margin-top:8px;padding:6px 10px;background:rgba(255,165,0,.1);border:1px solid rgba(255,165,0,.3);border-radius:4px;font-size:11px;color:#ffa502">⚠️ ' + p.risk_warning + '</div>' : ''
-  const wk = p.weekly_signals || {}
-  const wkHtml = wk.score != null
-    ? '<div style="margin-top:6px;padding:4px 8px;background:rgba(0,210,255,.05);border-radius:4px;font-size:11px;color:#888;text-align:center">📅 周线 ' + (wk.score >= 60 ? '✅' : '⚠️') + ' ' + (wk.summary || '') + '</div>'
-    : ''
-  const html =
-    '<div style="font-size:12px">' +
-    '<div style="text-align:center;margin-bottom:12px"><span style="font-size:22px">' + periodIcon + '</span>' +
-    '<div style="font-size:16px;font-weight:700;color:var(--accent);margin-top:4px">' + periodLabel + '</div>' +
-    '<div style="font-size:10px;color:#666;margin-top:2px">有效期: ' + data.valid_from + ' ~ ' + data.valid_until + '</div>' +
-      '<div style="font-size:10px;color:#555;margin-top:2px">从 ' + scanned + ' 只股票中选出</div></div>' +
-    '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:rgba(255,255,255,.03);border-radius:6px">' +
-    '<div><span style="font-size:18px;font-weight:700">' + p.name + '</span>' +
-    '<span style="font-size:11px;color:#888;margin-left:8px">' + p.code + '</span></div>' +
-    '<div style="text-align:right"><div style="font-size:20px;font-weight:700">' + p.price + '</div>' +
-    '<div class="' + chgCls + '" style="font-size:12px">' + chgSign + chg + '%</div></div></div>' +
-    '<div style="text-align:center;margin:10px 0">' +
-    '<span class="badge ' + cls + '" style="font-size:18px;padding:6px 24px">' + sig + ' ' + p.score + '</span>' +
-    '<div style="font-size:11px;color:#888;margin-top:4px">' + p.method_agree + '/' + p.total_methods + ' 方法一致</div></div>' +
-    '<div style="margin-top:10px;padding:8px;background:rgba(0,0,0,.15);border-radius:6px">' +
-    '<div style="font-size:11px;color:#aaa;margin-bottom:4px">📊 7维度评分</div>' + dimHtml + '</div>' +
-    patHtml +
-    (reasonsHtml ? '<div style="margin-top:8px;padding:8px;background:rgba(0,0,0,.15);border-radius:6px">' +
-    '<div style="font-size:11px;color:#aaa;margin-bottom:4px">📝 推荐理由</div>' + reasonsHtml + '</div>' : '') +
-    (srHtml ? '<div style="margin-top:8px;padding:8px;background:rgba(255,255,255,.02);border-radius:4px;text-align:center">' + srHtml + '</div>' : '') +
-    riskHtml +
-    wkHtml +
-    '<div style="text-align:center;font-size:10px;color:#555;margin-top:12px">扫描' + scanned + '只 · ' + (data.computed_at || '--') + '</div></div>'
-  document.getElementById('dailypickContent').innerHTML = html
+
+  let allHtml = "<div style=\"font-size:12px\">" +
+    "<div style=\"text-align:center;margin-bottom:10px\"><span style=\"font-size:22px\">" + periodIcon + "</span>" +
+    "<div style=\"font-size:16px;font-weight:700;color:var(--accent);margin-top:4px\">" + periodLabel + "</div>" +
+    "<div style=\"font-size:10px;color:#666;margin-top:2px\">有效期: " + data.valid_from + " ~ " + data.valid_until + "</div>" +
+    "<div style=\"font-size:10px;color:#555;margin-top:2px\">从 " + scanned + " 只股票中选出</div></div>"
+  picks.forEach(function(p, i) { allHtml += pickCard(p, i) })
+  allHtml += "<div style=\"text-align:center;font-size:10px;color:#555;margin-top:8px\">扫描" + scanned + "只 · " + (data.computed_at || "--") + "</div></div>"
+  document.getElementById("dailypickContent").innerHTML = allHtml
 }
 
 // ===================== Sector / Board Tracking =====================
@@ -2544,6 +2534,14 @@ function renderCommodity(data) {
 
 // ===================== Init =====================
 loadWatchlist()
+// 系统状态显示
+// 系统状态备用（服务端已直渲染，仅用于动态更新）
+setTimeout(function(){
+  fetch('/api/system/status').then(function(r){return r.ok?r.json():null}).then(function(d){
+    var el=document.getElementById('statusText')
+    if(el && d && d.features) el.textContent = d.features.join(' | ')
+  }).catch(function(){})
+}, 3000)
 // Auto-refresh every 30 seconds
 setInterval(scanWatchlist, 210000)  // 3.5分钟
 // Auto-refresh news every 60 seconds

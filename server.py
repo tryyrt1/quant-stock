@@ -13,7 +13,7 @@ def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get('auth') or session.get('auth') != hashlib.md5(APP_PASSWORD.encode()).hexdigest():
-            if request.path.startswith('/api/'):
+            if request.path.startswith('/api/') and '/api/system/status' not in request.path:
                 return jsonify({'error': '需要密码认证，请在首页输入密码'}), 401
             return redirect(url_for('login_page'))
         return f(*args, **kwargs)
@@ -435,7 +435,36 @@ def index():
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
+    # 服务端直渲染系统状态
+    try:
+        status_html = _get_system_status_html()
+        resp.set_data(resp.get_data().decode('utf-8').replace(
+            '<span id="statusText">加载中...</span>',
+            '<span id="statusText" style="color:#888">' + status_html + '</span>'
+        ).encode('utf-8'))
+    except:
+        pass
     return resp
+
+def _get_system_status_html():
+    from engine.weight_optimizer import get_weight_summary
+    from engine.ml_scorer import is_ready, FEATURE_FILE
+    import os, json
+    parts = []
+    if is_ready():
+        t = ''
+        if os.path.exists(FEATURE_FILE):
+            try: t = ' (' + json.load(open(FEATURE_FILE)).get('trained_at','')[:10] + ')'
+            except: pass
+        parts.append(f'ML评分{t}')
+    ws = get_weight_summary()
+    if '动态' in ws: parts.append('动态权重')
+    parts.append('周线分析')
+    parts.append('量价四形态')
+    parts.append('主力控盘度')
+    parts.append('尾盘监控')
+    parts.append('下跌原因分析')
+    return ' | '.join(parts)
 
     return '', 204
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
@@ -2046,6 +2075,41 @@ def stock_plunge_api(code):
 
     return jsonify({'code': code, 'market': market, 'change_pct': round(change_pct, 2),
                     'reasons': unique, 'summary': summary or ''})
+
+
+@app.route('/api/system/status')
+def system_status_api():
+    """系统状态及已部署功能"""
+    from engine.weight_optimizer import get_weight_summary
+    from engine.ml_scorer import is_ready, MODEL_FILE, FEATURE_FILE
+    import os
+    ml_ready = is_ready()
+    ml_time = ''
+    if ml_ready and os.path.exists(FEATURE_FILE):
+        try:
+            import json
+            with open(FEATURE_FILE) as f:
+                ml_time = json.load(f).get('trained_at', '')
+        except: pass
+    weight_info = get_weight_summary()
+    has_closing = os.path.exists(os.path.join(os.path.dirname(__file__), 'data', 'closing'))
+    features = []
+    if ml_ready: features.append(f'ML评分({ml_time})')
+    if '动态' in weight_info: features.append('动态权重')
+    features.append('周线分析')
+    features.append('量价四形态')
+    features.append('主力控盘度')
+    features.append('尾盘监控')
+    features.append('下跌原因分析')
+    return jsonify({
+        'status': 'running',
+        'version': '3.0',
+        'features': features,
+        'message': ' | '.join(features),
+        'ml_ready': ml_ready,
+        'ml_trained_at': ml_time,
+        'weight_mode': '动态' if '动态' in weight_info else '固定',
+    })
 CLOSING_DIR = os.path.join(DATA_DIR, 'closing')
 CLOSING_BASELINE = os.path.join(CLOSING_DIR, 'baseline.json')
 
@@ -2182,7 +2246,7 @@ def dailypick_api():
         return jsonify({
             'status': 'ready', 'period': period,
             'valid_from': valid_from, 'valid_until': valid_until,
-            'pick': cached.get('pick'), 'computed_at': cached.get('computed_at'),
+            'picks': cached.get('picks', [cached['pick']] if cached.get('pick') else []), 'computed_at': cached.get('computed_at'),
         })
     import threading
     threading.Thread(target=compute_daily_pick, args=(period,), daemon=True).start()
@@ -2681,10 +2745,30 @@ def compute_daily_pick(period='morning'):
                 if cur_chg < 9.0:
                     agree = sum(1 for d in decision.get('details', {}).values()
                                 if d.get('score', 0) >= 60)
+                    # 周线加分
+                    wk_bonus = 0
+                    try:
+                        wk = fetch_kline(s['market'] + code, 30, period='week')
+                        if wk and len(wk) >= 4:
+                            from engine.weekly import assess_weekly
+                            wkr = assess_weekly(wk)
+                            if wkr['score'] >= 60: wk_bonus = 10
+                            elif wkr['score'] >= 50: wk_bonus = 5
+                    except: pass
+                    vp_bonus = 0
+                    try:
+                        from engine.indicators import classify_vp_relationship
+                        vpr = classify_vp_relationship(k, baseline=120, recent=20)
+                        if vpr['type'] in ('量增价升',): vp_bonus = 8
+                        elif vpr['type'] in ('量减价升',): vp_bonus = 3
+                    except: pass
+                    boosted = decision['score'] + wk_bonus + vp_bonus
                     scored.append({
                         'code': code, 'market': s['market'], 'name': s.get('name', code),
                         'price': cur_price, 'change_pct': round(cur_chg, 2),
-                        'signal': decision['signal'], 'score': decision['score'],
+                        'signal': decision['signal'], 'score': min(100, boosted),
+                        'base_score': decision['score'],
+                        'wk_bonus': wk_bonus, 'vp_bonus': vp_bonus,
                         'details': decision.get('details', {}),
                         'reasons': decision.get('reasons', []),
                         'patterns_found': pattern_names,
@@ -2700,57 +2784,67 @@ def compute_daily_pick(period='morning'):
 
         # 排序: score 降序, 优先买入信号, method_agree 降序
         scored.sort(key=lambda r: (-r['score'], r['signal'] != '买入', -r['method_agree']))
-        best = scored[0]
-        # 确保前5名没有接近涨停的
-        for b in scored[:5]:
-            if b['change_pct'] < 8.5:
-                best = b
-                break
 
-        if best['score'] < 55:
-            print(f'[dailypick] 最高分仅 {best["score"]}，不值得推荐')
+        # 选前2名，确保没有接近涨停
+        picks = []
+        for b in scored:
+            if len(picks) >= 2: break
+            if b['change_pct'] < 8.5:
+                picks.append(b)
+
+        if not picks or picks[0]['score'] < 55:
+            print(f'[dailypick] 最高分仅 {picks[0]["score"] if picks else 0}，不值得推荐')
             return None
 
-        pick = {
-            'code': best['code'], 'market': best['market'], 'name': best['name'],
-            'price': best['price'], 'change_pct': best['change_pct'],
-            'signal': best['signal'], 'score': best['score'],
-            'method_agree': best['method_agree'],
-            'total_methods': best['total_methods'],
-            'details': {},
-            'top_reasons': best['reasons'][:5],
-            'patterns_found': best['patterns_found'],
-            'risk_warning': '',
-            'sr': best['sr'],
-        }
-        for key, val in best['details'].items():
-            s = val.get('score', 50)
-            sig = '买入' if s >= 75 else '增持' if s >= 60 else '持有' if s >= 45 else '卖出'
-            pick['details'][key] = {'score': s, 'signal': sig, 'reasons': val.get('reasons', [])}
+        pick_list = []
+        for i, best in enumerate(picks):
+            pick = {
+                'code': best['code'], 'market': best['market'], 'name': best['name'],
+                'price': best['price'], 'change_pct': best['change_pct'],
+                'signal': best['signal'], 'score': best['score'],
+                'method_agree': best['method_agree'],
+                'total_methods': best['total_methods'],
+                'details': {},
+                'top_reasons': best['reasons'][:5],
+                'patterns_found': best['patterns_found'],
+                'risk_warning': '',
+                'sr': best['sr'],
+            }
+            for key, val in best['details'].items():
+                s = val.get('score', 50)
+                sig = '买入' if s >= 75 else '增持' if s >= 60 else '持有' if s >= 45 else '卖出'
+                pick['details'][key] = {'score': s, 'signal': sig, 'reasons': val.get('reasons', [])}
 
-        # 周线分析
-        try:
-            wk = fetch_kline(best['market'] + best['code'], 30, period='week')
-            if wk and len(wk) >= 4:
-                from engine.weekly import assess_weekly
-                wr = assess_weekly(wk)
-                pick['weekly_signals'] = {
-                    'score': wr['score'],
-                    'summary': wr['summary'],
-                    'ma20_up': wr['signals']['ma20_trend']['ma20_up'],
-                    'consecutive_up': wr['signals']['consecutive_up']['consecutive_count'],
-                    'shrink_rise': wr['signals']['volume_shrink_rise']['shrink_rise'],
-                    'engulfing': wr['signals']['engulfing']['engulfing'],
-                }
-        except:
-            pass
+            # 周线分析
+            try:
+                wk = fetch_kline(best['market'] + best['code'], 30, period='week')
+                if wk and len(wk) >= 4:
+                    from engine.weekly import assess_weekly
+                    wr = assess_weekly(wk)
+                    pick['weekly_signals'] = {
+                        'score': wr['score'],
+                        'summary': wr['summary'],
+                        'ma20_up': wr['signals']['ma20_trend']['ma20_up'],
+                        'consecutive_up': wr['signals']['consecutive_up']['consecutive_count'],
+                    }
+            except:
+                pass
 
-        risk_parts = []
-        if best['change_pct'] > 7:
-            risk_parts.append(f'涨幅较大({best["change_pct"]}%)')
-        if best['method_agree'] < 4:
-            risk_parts.append('方法分歧较大')
-        pick['risk_warning'] = '；'.join(risk_parts) if risk_parts else ''
+            # 量价分析
+            try:
+                from engine.indicators import classify_vp_relationship
+                vpr = classify_vp_relationship(best.get('_kline', []), baseline=120, recent=20)
+                pick['vp'] = {'type': vpr['type'], 'label': vpr['label'], 'color': vpr['color']}
+            except:
+                pass
+
+            risk_parts = []
+            if best['change_pct'] > 7:
+                risk_parts.append(f'涨幅较大({best["change_pct"]}%)')
+            if best['method_agree'] < 4:
+                risk_parts.append('方法分歧较大')
+            pick['risk_warning'] = ';'.join(risk_parts) if risk_parts else ''
+            pick_list.append(pick)
 
         now_ts = time.time()
         if period == 'morning':
@@ -2762,14 +2856,15 @@ def compute_daily_pick(period='morning'):
 
         payload = {
             'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
-            'status': 'ready', 'pick': pick,
+            'status': 'ready', 'picks': pick_list,
             'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
             'scanned_count': len(kline_map),
         }
         os.makedirs(os.path.dirname(DAILYPICK_FILE), exist_ok=True)
         with open(DAILYPICK_FILE, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
-        print(f'[dailypick] {period} pick -> {best["name"]}({best["code"]}) score={best["score"]}')
+        names = ' + '.join([f'{p["name"]}({p["code"]}) sc={p["score"]}' for p in pick_list])
+        print(f'[dailypick] {period} picks -> {names}')
         return payload
     except Exception as e:
         print(f'[dailypick] 计算失败: {e}')
@@ -2960,6 +3055,15 @@ def _run_scheduled_scans():
             print(f'[scheduler] 次日预测验证: {vcount} 条')
         except Exception as e:
             print(f'[scheduler] 次日预测验证失败: {e}')
+        # ML模型每周重训练
+        try:
+            from engine.ml_scorer import train as ml_train
+            import os.path as _p
+            model_file = _p.join(_p.dirname(__file__), 'data', 'ml', 'model.pkl')
+            if not _p.exists(model_file) or (time.time() - _p.getmtime(model_file) > 7*86400):
+                ml_train()
+        except:
+            pass
 
     print(f'[scheduler] 扫描完成')
 

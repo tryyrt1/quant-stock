@@ -163,6 +163,44 @@ def calc_vp_correlation(closes, volumes, period=20):
 
 
 
+
+def classify_vp_weekly(klines, baseline=5, recent=5, vol_threshold=1.3, low_threshold=0.7, price_threshold=2.5):
+    """量价关系周同比分类（近5日 vs 前5日）"""
+    if len(klines) < baseline + recent:
+        return {'type': '正常', 'label': '数据不足', 'color': 'gray', 'score': 0, 'reason': '', 'ratio': 1, 'avg_return': 0}
+    chunk = klines[-(baseline + recent):]
+    prev_chunk = chunk[:recent]
+    curr_chunk = chunk[recent:]
+    avg_vol_prev = sum(k['volume'] for k in prev_chunk) / len(prev_chunk)
+    avg_vol_curr = sum(k['volume'] for k in curr_chunk) / len(curr_chunk)
+    ratio = avg_vol_curr / avg_vol_prev if avg_vol_prev > 0 else 1
+    returns = []
+    for i in range(1, len(curr_chunk)):
+        pc = curr_chunk[i-1]['close']
+        cc = curr_chunk[i]['close']
+        if pc > 0: returns.append((cc-pc)/pc*100)
+    avg_ret = sum(returns)/len(returns) if returns else 0
+    increased = ratio > vol_threshold
+    decreased = ratio < low_threshold
+    price_up = avg_ret >= price_threshold
+    price_flat = avg_ret < price_threshold
+    base_reason = f'周比={ratio:.2f}(近5日/前5日) | 近5日涨幅={avg_ret:.1f}% | '
+
+    if increased and price_flat:
+        r = base_reason + f'量增周比{ratio:.2f}但涨幅仅{avg_ret:.1f}%<{price_threshold}%=横盘放量'
+        return {'type':'量增价平','label':'短期放量滞涨','color':'orange','score':0,'reason':r,'ratio':ratio,'avg_return':avg_ret}
+    if increased and price_up:
+        r = base_reason + f'量增(>{vol_threshold}x)+价涨(>{price_threshold}%)=放量上涨'
+        return {'type':'量增价升','label':'短期放量上涨','color':'green','score':15,'reason':r,'ratio':ratio,'avg_return':avg_ret}
+    if decreased and price_up:
+        r = base_reason + f'量减(<{low_threshold}x)+价涨(>{price_threshold}%)=缩量上涨'
+        return {'type':'量减价升','label':'短期缩量上涨','color':'orange','score':5,'reason':r,'ratio':ratio,'avg_return':avg_ret}
+    if decreased and price_flat:
+        r = base_reason + f'量减(<{low_threshold}x)+价平(<{price_threshold}%)=缩量横盘'
+        return {'type':'量减价平','label':'短期缩量横盘','color':'gray','score':0,'reason':r,'ratio':ratio,'avg_return':avg_ret}
+    r = base_reason + '量价关系正常'
+    return {'type':'正常','label':'量价正常','color':'gray','score':0,'reason':r,'ratio':ratio,'avg_return':avg_ret}
+
 def classify_vp_relationship(klines, baseline=120, recent=20, vol_threshold=1.3, low_threshold=0.7):
     """量价关系四形态分类"""
     if len(klines) < baseline:
@@ -190,23 +228,69 @@ def classify_vp_relationship(klines, baseline=120, recent=20, vol_threshold=1.3,
     price_flat = avg_return < 3
     is_low = price_pos < 30
     is_high = price_pos > 70
+
+    # 构建推理原因
+    reason_parts = []
+    reason_parts.append(f'量比={vol_ratio:.2f}({recent}日/{baseline}日)')
+    if increased:
+        reason_parts.append(f'>{vol_threshold}=量增')
+    elif decreased:
+        reason_parts.append(f'<{low_threshold}=量减')
+    reason_parts.append(f'涨幅={avg_return:.1f}%')
+    if price_up:
+        reason_parts.append(f'>={price_threshold if "price_threshold" in dir() else 3}%=价涨')
+    else:
+        reason_parts.append(f'<{price_threshold if "price_threshold" in dir() else 3}%=价平')
+    reason_parts.append(f'价格在{baseline}日区间{price_pos:.0f}%')
+    if is_low:
+        reason_parts.append('=低位')
+    elif is_high:
+        reason_parts.append('=高位')
+    base_reason = ' | '.join(reason_parts) + ' -> '
+    
     if increased and price_flat:
         if is_low:
-            return {'type': '量增价平', 'label': '低位吸筹，反转：低转高，买入', 'color': 'green', 'score': 10}
+            return {'type':'量增价平','label':'低位吸筹，反转：低转高，买入','color':'green','score':10,'reason':base_reason+'量增价平+低位=吸筹信号'}
         elif is_high:
-            return {'type': '量增价平', 'label': '高位出货，反转：高转低', 'color': 'red', 'score': -10}
-        return {'type': '量增价平', 'label': '量增价平(中位)', 'color': 'orange', 'score': 0}
+            return {'type':'量增价平','label':'高位出货，反转：高转低','color':'red','score':-10,'reason':base_reason+'量增价平+高位=出货信号'}
+        return {'type':'量增价平','label':'量增价平(中位)','color':'orange','score':0,'reason':base_reason+'量增价平+中位=方向不明'}
     if increased and price_up:
         if is_high:
-            return {'type': '量增价升', 'label': '放量冲顶，警惕反转', 'color': 'red', 'score': -5}
+            return {'type':'量增价升','label':'放量冲顶，警惕反转','color':'red','score':-5,'reason':base_reason+'量增价升+高位=冲顶信号'}
         if is_low:
-            return {'type': '量增价升', 'label': '持续买入', 'color': 'green', 'score': 15}
-        return {'type': '量增价升', 'label': '健康上涨，持续买入', 'color': 'green', 'score': 15}
+            return {'type':'量增价升','label':'持续买入','color':'green','score':15,'reason':base_reason+'量增价升+低位=启动信号'}
+        return {'type':'量增价升','label':'健康上涨，持续买入','color':'green','score':15,'reason':base_reason+'量增价升+中位=健康上涨'}
     if decreased and price_up:
-        return {'type': '量减价升', 'label': '缩量上涨，主力控盘好', 'color': 'orange', 'score': 5}
+        return {'type':'量减价升','label':'缩量上涨，主力控盘好','color':'orange','score':5,'reason':base_reason+'量减价升=主力控盘'}
     if decreased and price_flat:
-        return {'type': '量减价平', 'label': '缩量横盘，等待方向', 'color': 'orange', 'score': 0}
-    return {'type': '正常', 'label': '量价关系正常', 'color': 'gray', 'score': 0}
+        return {'type':'量减价平','label':'缩量横盘，等待方向','color':'orange','score':0,'reason':base_reason+'量减价平=观望'}
+    return {'type':'正常','label':'量价关系正常','color':'gray','score':0,'reason':base_reason+'各项指标在正常范围内'}
+
+
+def calc_residual_momentum(closes, period=60):
+    """多期限残差动量：线性回归去趋势后的残差动量"""
+    if len(closes) < period + 5:
+        return {'residual': 0, 'momentum': 0, 'score': 0}
+    import math
+    x = list(range(period))
+    y = closes[-period:]
+    mx = sum(x) / period; my = sum(y) / period
+    num = sum((x[i] - mx) * (y[i] - my) for i in range(period))
+    den = sum((x[i] - mx) ** 2 for i in range(period))
+    slope = num / den if den != 0 else 0
+    intercept = my - slope * mx
+    # 残差 = 实际值 - 趋势值
+    residuals = [y[i] - (slope * x[i] + intercept) for i in range(period)]
+    cur_residual = residuals[-1]
+    prev_residual = residuals[-2]
+    # 残差动量 = 残差在扩大还是缩小
+    momentum = cur_residual - prev_residual
+    score = 0
+    if cur_residual > 0 and momentum > 0: score = 10  # 正残差且扩大 = 强势
+    elif cur_residual > 0: score = 5                    # 正残差 = 偏强
+    elif cur_residual < 0 and momentum < 0: score = -10 # 负残差且扩大 = 弱势
+    elif cur_residual < 0: score = -5                    # 负残差 = 偏弱
+    return {'residual': round(cur_residual, 4), 'momentum': round(momentum, 4), 'score': score}
 
 def calc_support_resistance(kline):
     """
@@ -294,7 +378,6 @@ def calc_support_resistance(kline):
         'resistance_strength': strength(nearest_resistance, True),
         'support_strength': strength(nearest_support, False),
     }
-from .indicators import calc_support_resistance
 
 def calc_main_force_control(klines, turnover_rate=None, capital_scores=None, news_sentiment=None, index_klines=None):
     items = []
