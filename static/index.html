@@ -1266,13 +1266,22 @@ function renderHotSectors(sectors) {
     const heatCls = sec.heat >= 70 ? '#ff4757' : sec.heat >= 55 ? '#ffa502' : sec.heat >= 40 ? '#00d2ff' : '#888'
     const chgCls = sec.change_pct >= 0 ? 'up' : 'down'
     const chgStr = sec.change_pct ? `${sec.change_pct >= 0 ? '+' : ''}${sec.change_pct}%` : ''
+    const rankLabels = []
+    if (sec.flow_rank) rankLabels.push(`💰资金流入第${sec.flow_rank}名`)
+    if (sec.heat_rank) rankLabels.push(`🔥热度第${sec.heat_rank}名`)
+    const rankLabel = rankLabels.join(' · ')
+    const flowStr = sec.net_flow ? `${sec.net_flow >= 0 ? '+' : ''}${sec.net_flow}万` : ''
+    const flowCls = sec.net_flow > 0 ? '#2ed573' : sec.net_flow < 0 ? '#ff4757' : '#888'
 
     html += `<div class="card" style="border-left:3px solid ${heatCls};padding:10px 14px">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <div><span style="font-size:13px;font-weight:600;color:#eee">${idx+1}. ${sec.name}</span>
+        <div>
+          ${rankLabel ? `<span style="font-size:10px;font-weight:600;color:${heatCls}">${rankLabel}</span><br>` : ''}
+          <span style="font-size:13px;font-weight:600;color:#eee">${sec.name}</span>
           <span style="font-size:10px;color:var(--dim);margin-left:6px">${sec.type === 'hot_concept' ? '概念' : '行业'}</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
+          ${flowStr ? `<span style="font-size:11px;color:${flowCls};font-weight:600">💰${flowStr}</span>` : ''}
           <span style="font-size:11px;color:${heatCls};font-weight:600">${sec.heat_signal || sec.heat}</span>
           <span class="${chgCls}" style="font-size:12px;font-weight:600">${chgStr}</span>
         </div>

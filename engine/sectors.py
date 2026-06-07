@@ -1,5 +1,5 @@
 """板块数据获取与扫描 — 全预定义概念/行业成分股映射 + 异动板块检测"""
-import time, json, re, os
+import time, json, re, os, concurrent.futures
 
 PREDEFINED = ["钠电池", "半导体", "电子", "光模块", "CPU", "锂电池", "人工智能", "算力"]
 
@@ -494,11 +494,101 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
 
     sectors_list = sorted(sectors_data.values(), key=lambda x: -x["heat"])[:top_n]
 
+    # ── Step 3: 全板块资金流聚合（从全部 CONCEPT_MAP，非仅热度前 N）──
+    # 收集全部板块的全部成分股（去重）
+    all_stocks_all = {}
+    for name, stocks in CONCEPT_MAP.items():
+        for code, market, cname in stocks:
+            key = f"{market}_{code}"
+            if key not in all_stocks_all:
+                all_stocks_all[key] = (code, market)
+
+    stock_flow_cache = {}
+
+    def _fetch_flow(code, market):
+        key = f"{market}_{code}"
+        if key in stock_flow_cache:
+            return stock_flow_cache[key]
+        try:
+            secid = "1." + code if market == "sh" else "0." + code
+            url = ("http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?"
+                   f"secid={secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,"
+                   f"f55,f56,f57,f58,f59,f60,f61,f62,f63")
+            import requests as req
+            r = req.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            data = r.json()
+            klines = (data.get("data") or {}).get("klines") or []
+            if klines:
+                parts = klines[0].split(",")
+                if len(parts) >= 13:
+                    net = float(parts[1])  # 主力净流入(元)
+                    stock_flow_cache[key] = net
+                    return net
+        except:
+            pass
+        stock_flow_cache[key] = 0
+        return 0
+
+    # 并发取全部成分股资金流
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
+        fut_map = {exe.submit(_fetch_flow, c, m): (c, m) for c, m in all_stocks_all.values()}
+        for f in concurrent.futures.as_completed(fut_map):
+            pass  # cache 已在 _fetch_flow 中填充
+
+    # 计算每个板块的资金净流入
+    all_sector_flows = []
+    for name, stocks in CONCEPT_MAP.items():
+        total_net = 0
+        for code, market, cname in stocks:
+            net = stock_flow_cache.get(f"{market}_{code}", 0)
+            total_net += net
+        net_flow_wan = round(total_net / 1e4, 0)
+        all_sector_flows.append({"name": name, "net_flow": net_flow_wan})
+
+    # 资金流入排名（全板块排序，记录每个板块的排位）
+    flow_ranked = sorted(all_sector_flows, key=lambda x: -x["net_flow"])
+    flow_rank_map = {r["name"]: i + 1 for i, r in enumerate(flow_ranked)}
+    flow_top10_names = [r["name"] for r in flow_ranked[:10]]
+
+    # 热度 Top 3（sectors_data 中已有 heat 的板块）
+    heat_ranked_all = sorted(sectors_data.values(), key=lambda x: -x["heat"])
+
+    # 构建资金流入榜列表（前10名）
+    flow_list = []
+    for item in flow_ranked[:10]:
+        sc_key = f"sector_{item['name']}"
+        sd = sectors_data.get(sc_key)
+        entry = {
+            "name": item["name"],
+            "net_flow": item["net_flow"],
+            "flow_rank": flow_rank_map.get(item["name"]),
+        }
+        if sd:
+            for k, v in sd.items():
+                if k not in ("name", "net_flow"):
+                    entry[k] = v
+        entry["type"] = "hot_concept"
+        flow_list.append(entry)
+
+    # 热度榜 Top 10（跳过已在资金榜中的）
+    heat_list = []
+    flow_names_set = set(flow_top10_names)
+    for sd in heat_ranked_all:
+        if len(heat_list) >= 10:
+            break
+        if sd["name"] in flow_names_set:
+            continue
+        sd["heat_rank"] = len(heat_list) + 1
+        sd["flow_rank"] = flow_rank_map.get(sd["name"])
+        heat_list.append(sd)
+
+    final_sectors = flow_list + heat_list
+
     return {
-        "sectors": sectors_list,
-        "total_sectors": len(sectors_list),
-        "total_stocks": sum(sd["stock_count"] for sd in sectors_list),
-        "total_patterns": total_patterns,
+        "sectors": final_sectors,
+        "total_sectors": len(final_sectors),
+        "total_stocks": sum(sd.get("stock_count", 0) for sd in final_sectors if sd.get("stock_count")),
+        "total_patterns": sum(sd.get("pattern_count", 0) for sd in final_sectors),
     }
 
 
