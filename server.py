@@ -1,5 +1,5 @@
 """AI 量化选股系统 - 主服务器 (单文件版)"""
-import json, os, socket, re, time, threading, shutil, subprocess
+import json, os, socket, sys, re, time, threading, shutil, subprocess
 from datetime import datetime
 from flask import Flask, jsonify, request, Response, send_from_directory
 
@@ -896,9 +896,11 @@ def dailypick_refresh_api():
         try: os.remove(DAILYPICK_FILE)
         except: pass
     period, _, _ = get_dailypick_period()
-    import threading
-    threading.Thread(target=compute_daily_pick, args=(period,), daemon=True).start()
-    return jsonify({'status': 'computing', 'message': 'ok'})
+    try:
+        compute_daily_pick(period)
+        return jsonify({'status': 'ready', 'message': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
 
 
 @app.route('/api/weekly/<code>')

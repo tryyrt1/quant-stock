@@ -1159,10 +1159,10 @@ function renderDailyPick(data) {
       "<div style=\"text-align:center;padding:30px\"><span class=\"spinner\"></span>全市场扫描计算中（约30秒）...</div>"
     return
   }
-  const picks = data.picks || []
-  if (!picks.length) {
+  if (data.status === "no_data" || !data.picks || !data.picks.length) {
     document.getElementById("dailypickContent").innerHTML =
-      "<div style=\"text-align:center;padding:30px;color:var(--dim)\">暂无推荐数据</div>"
+      "<div style=\"text-align:center;padding:30px;color:#888;font-size:13px\">暂无推荐数据<br><span style=\"font-size:11px;color:#555\">点击下方按钮重新选股</span></div>" +
+      "<div style=\"text-align:center;padding:10px\"><button onclick=\"refreshDailyPick()\" style=\"background:rgba(0,210,255,.1);border:1px solid #00d2ff;color:#00d2ff;padding:10px 30px;border-radius:6px;font-size:14px;cursor:pointer\">"+String.fromCharCode(128260)+" 重新选股</button></div>"
     return
   }
   const scanned = data.scanned_count || 500
@@ -1214,6 +1214,7 @@ function renderDailyPick(data) {
     "<div style=\"font-size:16px;font-weight:700;color:var(--accent);margin-top:4px\">" + periodLabel + ' <button onclick=\"refreshDailyPick()\" style=\"background:none;border:1px solid #555;color:#888;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer\">"+String.fromCharCode(128260)+" re</button>' + "</div>" +
     "<div style=\"font-size:10px;color:#666;margin-top:2px\">有效期: " + data.valid_from + " ~ " + data.valid_until + "</div>" +
     "<div style=\"font-size:10px;color:#555;margin-top:2px\">从 " + scanned + " 只股票中选出</div></div>"
+  const picks = data.picks
   picks.forEach(function(p, i) { allHtml += pickCard(p, i) })
   if (data.scan_summary) {
     var _ss = data.scan_summary
