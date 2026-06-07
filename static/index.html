@@ -206,8 +206,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 
           <span class="tag" style="background:rgba(160,90,255,.12);color:#a05aff">OBV底背离</span>
           <span class="tag" style="background:rgba(255,70,200,.12);color:#ff46c8">OBV+连涨共振</span>
-          <span class="tag" style="background:rgba(0,230,200,.12);color:#00e6c8">长下影+中阳</span>
-          <span class="tag" style="background:rgba(255,70,70,.12);color:#ff4646">超跌筛选</span>
+<span class="tag" style="background:rgba(255,70,70,.12);color:#ff4646">超跌筛选</span>
           <span class="tag" style="background:rgba(255,215,0,.15);color:#ffd700">首板涨停</span>
         </span>
       </div>
@@ -409,7 +408,7 @@ function renderPatterns() {
 
   // 按模式名称分组
   const grouped = {}
-  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '周线金叉', '周线二次金叉', '周线底背离', '周线放量突破', '量增价平', '量增价升', '量减价升', '量减价平', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '长下影+中阳', '超跌筛选', '首板涨停']
+  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '周线金叉', '周线二次金叉', '周线底背离', '周线放量突破', '横盘启动', '量增价平', '量增价升', '量减价升', '量减价平', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '超跌筛选', '首板涨停']
 
   patterns.forEach(p => {
     if (!grouped[p.pattern_name]) grouped[p.pattern_name] = []
@@ -428,7 +427,6 @@ function renderPatterns() {
     '量减价升': { bg: 'rgba(255,165,0,.08)', border: 'rgba(255,165,0,.2)', text: '#ffa502' },
     '量减价平': { bg: 'rgba(160,160,160,.08)', border: 'rgba(160,160,160,.2)', text: '#aaa' },
     'OBV+连涨共振': { bg: 'rgba(255,70,200,.08)', border: 'rgba(255,70,200,.2)', text: '#ff46c8' },
-    '长下影+中阳': { bg: 'rgba(0,230,200,.08)', border: 'rgba(0,230,200,.2)', text: '#00e6c8' },
     '超跌筛选': { bg: 'rgba(255,70,70,.08)', border: 'rgba(255,70,70,.2)', text: '#ff4646' },
     '首板涨停': { bg: 'rgba(255,215,0,.08)', border: 'rgba(255,215,0,.2)', text: '#ffd700' },
   }
@@ -1213,12 +1211,30 @@ function renderDailyPick(data) {
 
   let allHtml = "<div style=\"font-size:12px\">" +
     "<div style=\"text-align:center;margin-bottom:10px\"><span style=\"font-size:22px\">" + periodIcon + "</span>" +
-    "<div style=\"font-size:16px;font-weight:700;color:var(--accent);margin-top:4px\">" + periodLabel + "</div>" +
+    "<div style=\"font-size:16px;font-weight:700;color:var(--accent);margin-top:4px\">" + periodLabel + ' <button onclick=\"refreshDailyPick()\" style=\"background:none;border:1px solid #555;color:#888;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer\">"+String.fromCharCode(128260)+" re</button>' + "</div>" +
     "<div style=\"font-size:10px;color:#666;margin-top:2px\">有效期: " + data.valid_from + " ~ " + data.valid_until + "</div>" +
     "<div style=\"font-size:10px;color:#555;margin-top:2px\">从 " + scanned + " 只股票中选出</div></div>"
   picks.forEach(function(p, i) { allHtml += pickCard(p, i) })
+  if (data.scan_summary) {
+    var _ss = data.scan_summary
+    allHtml += "<div style=\"font-size:10px;color:#888;text-align:center;padding:2px\">⚠ 横盘突破扫描: 符合条件 " + (_ss.consolidation_breakout || 0) + " 只</div>"
+  }
   allHtml += "<div style=\"text-align:center;font-size:10px;color:#555;margin-top:8px\">扫描" + scanned + "只 · " + (data.computed_at || "--") + "</div></div>"
   document.getElementById("dailypickContent").innerHTML = allHtml
+}
+
+async function refreshDailyPick() {
+  var el = document.getElementById("dailypickContent")
+  el.innerHTML = "<div style=\"text-align:center;padding:30px\"><span class=\"spinner\"></span>re...</div>"
+  await api("/api/dailypick/refresh")
+  var _pc = 0
+  var _tm = setInterval(async function() {
+    _pc++; if (_pc > 60) { clearInterval(_tm); return }
+    try {
+      var d = await api("/api/dailypick")
+      if (d && d.status === "ready") { clearInterval(_tm); renderDailyPick(d) }
+    } catch(e) {}
+  }, 5000)
 }
 
 // ===================== Sector / Board Tracking =====================
@@ -1360,7 +1376,7 @@ function renderSectorResults(sectors) {
   let html = ''
   const patColors = {
     '连续上攻': '#00d2ff', '均线金叉': '#ff4757', 'OBV价升创新高': '#a05aff',
-    '长下影+中阳': '#00e6c8', '超跌筛选': '#ff4646', '首板涨停': '#ffd700',
+    '超跌筛选': '#ff4646', '首板涨停': '#ffd700',
   }
   sectors.forEach(sec => {
     const upPct = sec.stock_count > 0 ? (sec.up_count / sec.stock_count * 100).toFixed(0) : 0

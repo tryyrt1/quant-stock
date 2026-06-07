@@ -890,6 +890,17 @@ def stock_capital_api(code):
     return jsonify(result)
 
 
+@app.route('/api/dailypick/refresh')
+def dailypick_refresh_api():
+    if os.path.exists(DAILYPICK_FILE):
+        try: os.remove(DAILYPICK_FILE)
+        except: pass
+    period, _, _ = get_dailypick_period()
+    import threading
+    threading.Thread(target=compute_daily_pick, args=(period,), daemon=True).start()
+    return jsonify({'status': 'computing', 'message': 'ok'})
+
+
 @app.route('/api/weekly/<code>')
 def weekly_analysis_api(code):
     """周线分析"""
@@ -2247,13 +2258,11 @@ def dailypick_api():
             'status': 'ready', 'period': period,
             'valid_from': valid_from, 'valid_until': valid_until,
             'picks': cached.get('picks', [cached['pick']] if cached.get('pick') else []), 'computed_at': cached.get('computed_at'),
+            'scan_summary': cached.get('scan_summary', {}),
         })
-    import threading
-    threading.Thread(target=compute_daily_pick, args=(period,), daemon=True).start()
     return jsonify({
-        'status': 'computing', 'period': period,
+        'status': 'no_data', 'period': period,
         'valid_from': valid_from, 'valid_until': valid_until,
-        'message': '正在全市场扫描，请10秒后刷新...',
     })
 
 
@@ -2762,13 +2771,35 @@ def compute_daily_pick(period='morning'):
                         if vpr['type'] in ('量增价升',): vp_bonus = 8
                         elif vpr['type'] in ('量减价升',): vp_bonus = 3
                     except: pass
-                    boosted = decision['score'] + wk_bonus + vp_bonus
+                    # 横盘启动加分
+                    cb_bonus = 0
+                    try:
+                        from engine.patterns import pattern_consolidation_breakout
+                        cb_ok, cb_info = pattern_consolidation_breakout(k)
+                        if cb_ok:
+                            cb_bonus = 12 if cb_info.get('score', 0) >= 30 else 8
+                    except: pass
+                    # 跳空加分（集合竞价结果）
+                    gap_bonus = 0
+                    try:
+                        if q:
+                            op = q.get('open', 0)
+                            yc = q.get('yesterdayClose', 0)
+                            if op > 0 and yc > 0:
+                                gap = (op - yc) / yc * 100
+                                sig = decision.get('signal', '持有')
+                                if gap > 1.5 and sig in ('买入', '增持'): gap_bonus = 8
+                                elif gap < -1.5 and sig in ('卖出', '减仓'): gap_bonus = 8
+                                elif gap > 1.5 and sig in ('卖出', '减仓'): gap_bonus = -5
+                                elif gap < -1.5 and sig in ('买入', '增持'): gap_bonus = -5
+                    except: pass
+                    boosted = decision['score'] + wk_bonus + vp_bonus + cb_bonus + gap_bonus
                     scored.append({
                         'code': code, 'market': s['market'], 'name': s.get('name', code),
                         'price': cur_price, 'change_pct': round(cur_chg, 2),
                         'signal': decision['signal'], 'score': min(100, boosted),
                         'base_score': decision['score'],
-                        'wk_bonus': wk_bonus, 'vp_bonus': vp_bonus,
+                        'wk_bonus': wk_bonus, 'vp_bonus': vp_bonus, 'cb_bonus': cb_bonus, 'gap_bonus': gap_bonus,
                         'details': decision.get('details', {}),
                         'reasons': decision.get('reasons', []),
                         'patterns_found': pattern_names,
@@ -2854,12 +2885,37 @@ def compute_daily_pick(period='morning'):
             valid_from = time.strftime('%Y-%m-%d') + ' 15:01'
             valid_until = time.strftime('%Y-%m-%d', time.localtime(now_ts + 86400)) + ' 09:25'
 
+        # 统计横盘突破扫描结果
+        cb_total = 0
+        for b in scored:
+            if b.get('cb_bonus', 0) >= 8:
+                cb_total += 1
         payload = {
             'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
             'status': 'ready', 'picks': pick_list,
             'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
             'scanned_count': len(kline_map),
+            'scan_summary': {'consolidation_breakout': cb_total},
         }
+        # 横盘突破特别关注（从落选股中检出，不占前2名额）
+        special_pick = None
+        for b in scored:
+            if b.get('cb_bonus', 0) >= 8 and b['code'] not in [p['code'] for p in pick_list]:
+                special_pick = {
+                    'code': b['code'], 'market': b['market'], 'name': b['name'],
+                    'price': b['price'], 'change_pct': b['change_pct'],
+                    'signal': b['signal'], 'score': b['score'],
+                    'details': {},
+                    'top_reasons': [f'横盘突破(加分{b.get("cb_bonus",0)})'],
+                    'risk_warning': '',
+                }
+                for key, val in b['details'].items():
+                    s = val.get('score', 50)
+                    special_pick['details'][key] = {'score': s, 'signal': '买入' if s>=75 else '增持' if s>=60 else '持有' if s>=45 else '卖出'}
+                break
+        if special_pick:
+            payload['special'] = special_pick
+
         os.makedirs(os.path.dirname(DAILYPICK_FILE), exist_ok=True)
         with open(DAILYPICK_FILE, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -3060,7 +3116,7 @@ def _run_scheduled_scans():
             from engine.ml_scorer import train as ml_train
             import os.path as _p
             model_file = _p.join(_p.dirname(__file__), 'data', 'ml', 'model.pkl')
-            if not _p.exists(model_file) or (time.time() - _p.getmtime(model_file) > 7*86400):
+            if not _p.exists(model_file) or (time.time() - _p.getmtime(model_file) > 86400):
                 ml_train()
         except:
             pass
