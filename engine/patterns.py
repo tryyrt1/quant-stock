@@ -738,6 +738,48 @@ def pattern_vp_decrease_flat(klines, lookback=120):
         return True, {'label': r['label'], 'color': r['color'], 'score': r['score'], 'vp_type': r['type']}
     return False, {}
 
+
+def pattern_consolidation_breakout(klines, lookback=60):
+    """横盘低位启动：长时间横盘+放量突破+均线多头"""
+    if not klines or len(klines) < lookback:
+        return False, {}
+    chunk = klines[-lookback:]
+    closes = [k['close'] for k in chunk]
+    highs = [k['high'] for k in chunk]
+    lows = [k['low'] for k in chunk]
+    vols = [k['volume'] for k in chunk]
+    cur = closes[-1]
+    highest = max(highs)
+    lowest = min(lows)
+    amplitude = (highest - lowest) / lowest * 100 if lowest else 0
+    # 1. 横盘
+    consolidation = amplitude < 20
+    # 2. 突破
+    breakout = cur > highest * 0.99  # 接近或突破区间最高
+    # 3. 放量
+    avg_vol = sum(vols) / len(vols)
+    volume_surge = vols[-1] > avg_vol * 1.3
+    # 4. 均线多头
+    if len(closes) >= 60:
+        ma10 = sum(closes[-10:]) / 10
+        ma20 = sum(closes[-20:]) / 20
+        ma60 = sum(closes[-60:]) / 60
+    else:
+        ma10 = ma20 = ma60 = cur
+    bullish = ma10 > ma20 > ma60
+    # 5. 低位
+    mid_price = (highest + lowest) / 2
+    low_pos = cur < mid_price * 1.05
+    score = (10 if consolidation else 0) + (15 if breakout else 0) + (10 if volume_surge else 0) + (5 if bullish else 0) + (5 if low_pos else 0)
+    if score < 20:
+        return False, {}
+    label_parts = []
+    if consolidation: label_parts.append(f'横盘{amplitude:.0f}%')
+    if breakout: label_parts.append('突破')
+    if volume_surge: label_parts.append(f'放量{vols[-1]/avg_vol:.1f}倍')
+    if bullish: label_parts.append('多头')
+    return True, {'label': ' '.join(label_parts), 'score': score, 'amplitude': round(amplitude, 1)}
+
 # 所有模式列表: (name, display_name, func)
 ALL_PATTERNS = [
     ('consecutive_up', '连续上攻', pattern_consecutive_up),
@@ -747,7 +789,7 @@ ALL_PATTERNS = [
     # ('obv_flat', 'OBV横盘', pattern_obv_flat),  # 已移除
     ('obv_divergence', 'OBV底背离', pattern_obv_divergence),
     ('obv_plus_breakout', 'OBV+连涨共振', pattern_obv_plus_breakout),
-    ('long_lower_shadow', '长下影+中阳', pattern_long_lower_shadow),
+    # ('long_lower_shadow', '长下影+中阳', pattern_long_lower_shadow),  # 已移除
     ('oversold', '超跌筛选', pattern_oversold),
     ('one_limitup', '首板涨停', pattern_one_limitup),
     # ('pre_breakout', '潜在翻倍', pattern_pre_breakout),  # 已移除
@@ -758,6 +800,7 @@ ALL_PATTERNS = [
     ('vp_decrease_flat', '量减价平', pattern_vp_decrease_flat),
     ('vp_confirm', '量价共振', pattern_vp_confirm),
     ('vp_divergence', '量价背离', pattern_vp_divergence),
+    ('consolidation_breakout', '横盘启动', pattern_consolidation_breakout),
 ]
 
 def scan_patterns(klines_all):
