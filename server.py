@@ -1042,6 +1042,29 @@ def trigger_opencore(code):
     return jsonify({'task_id': task_id, 'status': 'done'})
 
 
+# ─── 估值分析 ───
+@app.route('/api/stock/<code>/valuation')
+def valuation_api(code):
+    """个股估值分析：自算 PE/PB vs 市场报价"""
+    market = request.args.get('market', 'sz')
+    price = request.args.get('price', type=float, default=0)
+    if not price:
+        code_str = f"{market}{code}"
+        q = fetch_tencent_quote(code_str)
+        if q and q.get(code):
+            price = q[code].get('price', 0)
+    if not price:
+        return jsonify({'error': '无法获取价格'})
+    from engine.valuation import get_valuation
+    # 取腾讯行情的 PE/PB 作为对比
+    code_str = f"{market}{code}"
+    q = fetch_tencent_quote(code_str)
+    market_pe = q.get(code, {}).get('pe', 0) if q else 0
+    market_pb = q.get(code, {}).get('pb', 0) if q else 0
+    result = get_valuation(code, price, market_pe=market_pe or None, market_pb=market_pb or None)
+    return jsonify(result)
+
+
 # ─── 宏观/商品分析 ───
 COMMODITIES = [
     # Domestic futures (via futures_zh_daily_sina)
@@ -2746,6 +2769,14 @@ def compute_daily_pick(period='morning'):
                 pats = scan_patterns({s['market'] + code: k})
                 patterns = pats.get(s['market'] + code, [])
                 pattern_names = [p['name'] for p in patterns]
+                # 估值高与价格低背离检测（仅标签，不加分）
+                try:
+                    from engine.patterns import pattern_valuation_price_divergence
+                    vpd_ok, vpd_info = pattern_valuation_price_divergence(k, pe=s.get('pe', 0))
+                    if vpd_ok:
+                        pattern_names.append('估值高与价格低背离')
+                        patterns.append({'key': 'valuation_price_divergence', 'name': '估值高与价格低背离', 'info': vpd_info})
+                except: pass
                 # 用最新收盘价作为价格
                 cur_price = closes[-1] if closes else 0
                 cur_chg = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0

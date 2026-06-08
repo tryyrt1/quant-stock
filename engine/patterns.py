@@ -780,6 +780,50 @@ def pattern_consolidation_breakout(klines, lookback=60):
     if bullish: label_parts.append('多头')
     return True, {'label': ' '.join(label_parts), 'score': score, 'amplitude': round(amplitude, 1)}
 
+def pattern_valuation_price_divergence(klines, pe=0, pb=0):
+    """估值高与价格低背离：股价在低位但估值偏高（PE高说明盈利未崩，价格低说明被错杀）"""
+    if len(klines) < 60:
+        return False, {}
+    closes = [k['close'] for k in klines]
+    highs = [k['high'] for k in klines[-60:]]
+    lows = [k['low'] for k in klines[-60:]]
+    vols = [k['volume'] for k in klines[-60:]]
+    cur = closes[-1]
+    lowest = min(lows)
+    highest = max(highs)
+    amplitude = (highest - lowest) / lowest * 100 if lowest else 100
+    # 1. 价格低: 处于60日区间底部25%以内
+    range_pos = (cur - lowest) / (highest - lowest) * 100 if highest > lowest else 100
+    price_low = range_pos < 25
+    # 2. 破均线: 收盘在 MA20 和 MA60 下方
+    ma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else cur
+    ma60 = sum(closes[-60:]) / 60 if len(closes) >= 60 else cur
+    below_ma = cur < ma20 * 0.98 and cur < ma60 * 0.98
+    # 3. RSI 偏低（超卖区）
+    from .indicators import calc_rsi
+    rsi_val = calc_rsi(closes, 14)[-1]
+    rsi_low = rsi_val is not None and rsi_val < 40
+    # 4. 估值高（需要外部传入 PE/PB）
+    pe_high = pe > 30 if pe > 0 else False
+    pb_high = pb > 3 if pb > 0 else False
+    score = (15 if price_low else 0) + (10 if below_ma else 0) + (5 if rsi_low else 0) + (15 if pe_high else 0) + (5 if pb_high else 0)
+    if score < 20:
+        return False, {}
+    label_parts = []
+    if price_low: label_parts.append(f'低位{range_pos:.0f}%')
+    if below_ma: label_parts.append('破均')
+    if rsi_low: label_parts.append(f'RSI{rsi_val:.0f}')
+    if pe_high: label_parts.append(f'PE{pe:.0f}')
+    if pb_high: label_parts.append(f'PB{pb:.1f}')
+    return True, {
+        'label': ' '.join(label_parts),
+        'score': score,
+        'range_pos': round(range_pos, 1),
+        'pe': pe,
+        'pb': pb,
+        'rsi': round(rsi_val, 1) if rsi_val else None,
+    }
+
 # 所有模式列表: (name, display_name, func)
 ALL_PATTERNS = [
     ('consecutive_up', '连续上攻', pattern_consecutive_up),
@@ -801,6 +845,7 @@ ALL_PATTERNS = [
     ('vp_confirm', '量价共振', pattern_vp_confirm),
     ('vp_divergence', '量价背离', pattern_vp_divergence),
     ('consolidation_breakout', '横盘启动', pattern_consolidation_breakout),
+    ('valuation_price_divergence', '估值高与价格低背离', pattern_valuation_price_divergence),
 ]
 
 def scan_patterns(klines_all):

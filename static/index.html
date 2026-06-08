@@ -408,7 +408,7 @@ function renderPatterns() {
 
   // 按模式名称分组
   const grouped = {}
-  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '周线金叉', '周线二次金叉', '周线底背离', '周线放量突破', '横盘启动', '量增价平', '量增价升', '量减价升', '量减价平', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '超跌筛选', '首板涨停']
+  const patternOrder = ['周线多头', '周线阳包阴', '周线粘合向上发散', '周线金叉', '周线二次金叉', '周线底背离', '周线放量突破', '横盘启动', '估值高与价格低背离', '量增价平', '量增价升', '量减价升', '量减价平', '连续上攻', '均线金叉', 'OBV价升创新高', 'OBV底背离', 'OBV+连涨共振', '超跌筛选', '首板涨停']
 
   patterns.forEach(p => {
     if (!grouped[p.pattern_name]) grouped[p.pattern_name] = []
@@ -429,6 +429,7 @@ function renderPatterns() {
     'OBV+连涨共振': { bg: 'rgba(255,70,200,.08)', border: 'rgba(255,70,200,.2)', text: '#ff46c8' },
     '超跌筛选': { bg: 'rgba(255,70,70,.08)', border: 'rgba(255,70,70,.2)', text: '#ff4646' },
     '首板涨停': { bg: 'rgba(255,215,0,.08)', border: 'rgba(255,215,0,.2)', text: '#ffd700' },
+    '估值高与价格低背离': { bg: 'rgba(255,154,0,.08)', border: 'rgba(255,154,0,.2)', text: '#ff9a00' },
   }
   patternOrder.forEach(name => {
     const items = grouped[name] || []
@@ -1107,9 +1108,11 @@ function renderReport(data, decision) {
         <button class="btn btn-ms" onclick="runMinesweeper('${data.code}')" id="msBtn" style="flex:1">🔍 排雷检测</button>
         <button class="btn btn-sc" onclick="showTechScore()" id="scBtn" style="flex:1">📐 技术评分</button>
         <button class="btn btn-weekly" onclick="loadWeeklyAnalysis('${data.code}','${data.market||'sh'}')" id="wkBtn" style="flex:1">📅 周线分析</button>
+        <button class="btn btn-valuation" onclick="loadValuation('${data.code}','${data.market||'sh'}',${q.price||0})" id="valBtn" style="flex:1">📊 估值分析</button>
       </div>
       <div id="msResult" style="margin-top:8px;display:none"></div>
       <div id="weeklyResult" style="margin-top:8px;display:none"></div>
+      <div id="valuationResult" style="margin-top:8px;display:none"></div>
     </div>
   `
 
@@ -2308,6 +2311,67 @@ async function loadWeeklyAnalysis(code, market) {
   } finally {
     btn.disabled = false
     btn.innerHTML = '📅 周线分析'
+  }
+}
+
+async function loadValuation(code, market, price) {
+  const el = document.getElementById('valuationResult')
+  const btn = document.getElementById('valBtn')
+  el.style.display = 'block'
+  btn.disabled = true
+  btn.innerHTML = '<span class="spinner"></span> 计算中...'
+  try {
+    const data = await api(`/api/stock/${code}/valuation?market=${market}&price=${price}`)
+    if (!data || data.error) {
+      el.innerHTML = '<div style="font-size:11px;color:var(--dim);padding:8px">暂无估值数据</div>'
+      return
+    }
+    const formatNum = (v, d) => v != null && v != undefined ? Number(v).toFixed(d || 2) : '--'
+    const pct = (v) => v != null ? (v > 0 ? '<span style="color:#ff4757">▲ +' + v.toFixed(1) + '%</span>' : '<span style="color:#2ed573">▼ ' + v.toFixed(1) + '%</span>') : '--'
+    const style = 'padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px;display:flex;justify-content:space-between'
+    const valStyle = 'text-align:right;color:#eee'
+    const labelStyle = 'color:#999'
+
+    let html = '<div style="padding:8px;background:rgba(255,154,0,.05);border:1px solid rgba(255,154,0,.15);border-radius:6px;font-size:12px">'
+    html += '<div style="color:#ff9a00;margin-bottom:8px;font-size:13px;font-weight:600">📊 估值分析</div>'
+
+    if (data.industry) html += '<div style="padding:4px 8px;font-size:11px;color:#666;margin-bottom:4px">行业：' + data.industry + '</div>'
+
+    // PE
+    html += '<div style="' + style + '"><span style="' + labelStyle + '">PE(TTM) 自算</span><span style="' + valStyle + '">' + formatNum(data.ttm_pe) + '</span></div>'
+    html += '<div style="' + style + '"><span style="' + labelStyle + '">PE(TTM) 市场</span><span style="' + valStyle + '">' + formatNum(data.market_pe) + '</span></div>'
+    if (data.pe_deviation_pct != null) {
+      html += '<div style="' + style + '"><span style="' + labelStyle + '">PE 偏离</span><span style="' + valStyle + '">' + pct(data.pe_deviation_pct) + '</span></div>'
+    }
+
+    // PB
+    html += '<div style="padding:4px 8px;font-size:10px;color:#555">── PB ──</div>'
+    html += '<div style="' + style + '"><span style="' + labelStyle + '">PB 自算</span><span style="' + valStyle + '">' + formatNum(data.pb) + '</span></div>'
+    html += '<div style="' + style + '"><span style="' + labelStyle + '">PB 市场</span><span style="' + valStyle + '">' + formatNum(data.market_pb) + '</span></div>'
+    if (data.pb_deviation_pct != null) {
+      html += '<div style="' + style + '"><span style="' + labelStyle + '">PB 偏离</span><span style="' + valStyle + '">' + pct(data.pb_deviation_pct) + '</span></div>'
+    }
+
+    // ROE
+    if (data.roe != null) {
+      html += '<div style="padding:4px 8px;font-size:10px;color:#555">── 盈利 ──</div>'
+      html += '<div style="' + style + '"><span style="' + labelStyle + '">ROE</span><span style="' + valStyle + '">' + data.roe.toFixed(1) + '%</span></div>'
+    }
+
+    // 备注
+    if (data.notes && data.notes.length) {
+      html += '<div style="padding:6px 8px;margin-top:4px;background:rgba(255,154,0,.08);border-radius:4px;font-size:11px;color:#ff9a00">'
+      data.notes.forEach(n => { html += '<div>💡 ' + n + '</div>' })
+      html += '</div>'
+    }
+
+    html += '</div>'
+    el.innerHTML = html
+  } catch(e) {
+    el.innerHTML = '<div style="font-size:11px;color:#ff4757;padding:8px">估值数据加载失败</div>'
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '📊 估值分析'
   }
 }
 
