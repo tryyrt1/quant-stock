@@ -2861,6 +2861,14 @@ def compute_daily_pick(period='morning'):
                                 elif gap < -1.5 and sig in ('买入', '增持'): gap_bonus = -5
                     except Exception as e:
                         print(f'[dailypick] {code} 跳空加分失败: {e}')
+                    # 量价标签（预计算，避免后面取_kline为空）
+                    _vp_label = ''
+                    try:
+                        from engine.indicators import classify_vp_relationship
+                        _vpr = classify_vp_relationship(k, baseline=120, recent=20)
+                        _vp_label = _vpr.get('label', '')
+                    except:
+                        pass
                     boosted = decision['score'] + wk_bonus + vp_bonus + cb_bonus + gap_bonus
                     scored.append({
                         'code': code, 'market': s['market'], 'name': s.get('name', code),
@@ -2873,6 +2881,7 @@ def compute_daily_pick(period='morning'):
                         'patterns_found': pattern_names,
                         'method_agree': agree, 'total_methods': 7,
                         'sr': sr,
+                        'vp_label': _vp_label,
                         'range_pos': round(range_pos, 1),
                         'vol_ratio': round(vol_ratio, 2),
                         'cum_3d_chg': round(cum_3d_chg, 2),
@@ -2932,13 +2941,9 @@ def compute_daily_pick(period='morning'):
             except:
                 pass
 
-            # 量价分析
-            try:
-                from engine.indicators import classify_vp_relationship
-                vpr = classify_vp_relationship(best.get('_kline', []), baseline=120, recent=20)
-                pick['vp'] = {'type': vpr['type'], 'label': vpr['label'], 'color': vpr['color']}
-            except:
-                pass
+            # 量价标签
+            if best.get('vp_label'):
+                pick['vp'] = {'label': best['vp_label']}
 
             risk_parts = []
             if best['change_pct'] > 7:
