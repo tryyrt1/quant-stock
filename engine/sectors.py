@@ -304,10 +304,10 @@ def fetch_all_boards():
                             "volume": vol,
                             "heat": round(heat, 1),
                         })
-                    except:
-                        pass
-        except:
-            pass
+                    except Exception as e:
+                        print(f'[sectors] 概念板块股票解析失败: {e}')
+        except Exception as e:
+            print(f'[sectors] akshare概念板块获取失败: {e}')
 
         # 行业板块
         try:
@@ -404,8 +404,8 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
             price = float(f[3]) if f[3] else 0
             change = float(f[32]) if len(f) > 32 and f[32] else 0
             quote_map[market + code] = {"price": price, "change_pct": round(change, 2)}
-    except:
-        pass
+    except Exception as e:
+        print(f'[sectors] Step1 批量行情失败: {e}')
 
     # 初步热度（只用 up_ratio + avg_abs_change，不含 pattern）
     sector_prelim = []
@@ -451,8 +451,8 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
                 kline = fetch_kline_func(full_code, 120)
                 if kline and len(kline) >= 20:
                     klines_all[full_code] = kline
-            except:
-                pass
+            except Exception as e:
+                print(f'[sectors] {full_code} K线获取失败: {e}')
 
     pattern_results = scan_patterns(klines_all) if klines_all else {}
 
@@ -515,7 +515,7 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
                    f"secid={secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,"
                    f"f55,f56,f57,f58,f59,f60,f61,f62,f63")
             import requests as req
-            r = req.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            r = req.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
             data = r.json()
             klines = (data.get("data") or {}).get("klines") or []
             if klines:
@@ -524,8 +524,8 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
                     net = float(parts[1])  # 主力净流入(元)
                     stock_flow_cache[key] = net
                     return net
-        except:
-            pass
+        except Exception as e:
+            print(f'[sectors] 资金流获取失败 {code}: {e}')
         stock_flow_cache[key] = 0
         return 0
 
@@ -676,9 +676,9 @@ def scan_sector_stocks(sector_codes, fetch_kline_func, max_stocks=30, kline_days
             kline = fetch_kline_func(full_code, kline_days)
             if kline and len(kline) >= 20:
                 klines_all[full_code] = kline
-        except:
-            pass
-        time.sleep(0.05)
+        except Exception as e:
+            print(f'[sectors] {full_code} K线获取失败: {e}')
+        time.sleep(0.02)
 
     # 获取实时行情
     if all_stocks:

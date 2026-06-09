@@ -1261,7 +1261,7 @@ async function loadHotSectors() {
 function renderHotSectors(sectors) {
   const el = document.getElementById('hotSectorsResult')
   if (!sectors || sectors.length === 0) {
-    el.innerHTML = '<div class="card" style="text-align:center;padding:12px;color:var(--dim)">暂无异动板块</div>'
+    el.innerHTML = '<div class="card" style="text-align:center;padding:12px;color:var(--dim)">暂无异动板块 <span style="font-size:10px;color:#555">(数据源暂不可用)</span></div>'
     return
   }
   let html = ''
@@ -1384,7 +1384,7 @@ async function scanSectors() {
 function renderSectorResults(sectors) {
   const el = document.getElementById('sectorResults')
   if (!sectors || sectors.length === 0) {
-    el.innerHTML = '<div class="empty"><div class="empty-icon">🧩</div><div>暂无结果</div></div>'; return
+    el.innerHTML = '<div class="empty"><div class="empty-icon">🧩</div><div>暂无结果 <span style="font-size:10px;color:#555">(数据源暂不可用)</span></div></div>'; return
   }
   let html = ''
   const patColors = {

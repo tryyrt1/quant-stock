@@ -540,9 +540,21 @@ def stock_detail(code):
         f_kline = exe.submit(fetch_kline, full_code, 120)
         f_news = exe.submit(fetch_news, code, market)
 
-    quotes = f_quote.result()
-    kline = f_kline.result()
-    news_raw = f_news.result()
+    try:
+        quotes = f_quote.result()
+    except Exception as e:
+        print(f'[stock_detail] {code} 获取行情失败: {e}')
+        quotes = {}
+    try:
+        kline = f_kline.result()
+    except Exception as e:
+        print(f'[stock_detail] {code} 获取K线失败: {e}')
+        kline = []
+    try:
+        news_raw = f_news.result()
+    except Exception as e:
+        print(f'[stock_detail] {code} 获取新闻失败: {e}')
+        news_raw = []
 
     quote = quotes.get(code, {}) if quotes else {}
 
@@ -580,8 +592,8 @@ def stock_detail(code):
         turnover = quote.get('turnover', 0) if quote else 0
         sentiment_score_local = sentiment_score if 'sentiment_score' in dir() else 0
         mfc_result = calc_main_force_control(kline, turnover_rate=turnover, news_sentiment=sentiment_score, index_klines=idx_k)
-    except:
-        pass
+    except Exception as e:
+        print(f'[stock_detail] {code} 主力控盘度失败: {e}')
 
     # 量价关系（双版本）
     vp_result = {}
@@ -592,8 +604,8 @@ def stock_detail(code):
                 'daily': classify_vp_relationship(kline),
                 'weekly': classify_vp_weekly(kline) if len(kline) >= 10 else {'type':'正常','label':'数据不足','color':'gray'},
             }
-        except:
-            pass
+        except Exception as e:
+            print(f'[stock_detail] {code} 量价关系失败: {e}')
 
     return jsonify({
         'code': code,
@@ -1860,12 +1872,15 @@ def scan_market_api():
                 if _qc in candidate_lookup:
                     try:
                         candidate_lookup[_qc]['change_pct'] = float(_qf[32]) if _qf[32] else 0
-                    except: pass
+                    except Exception as e:
+                        print(f'[market_scan] 解析涨跌幅失败 {_qc}: {e}')
                     try:
                         pe_val = float(_qf[39]) if len(_qf) > 39 and _qf[39] else 0
                         candidate_lookup[_qc]['pe'] = pe_val
-                    except: pass
-        except: pass
+                    except Exception as e:
+                        print(f'[market_scan] 解析PE失败 {_qc}: {e}')
+        except Exception as e:
+            print(f'[market_scan] 批量行情失败: {e}')
 
 
     raw = scan_patterns(klines_all)
@@ -2776,7 +2791,8 @@ def compute_daily_pick(period='morning'):
                     if vpd_ok:
                         pattern_names.append('估值高与价格低背离')
                         patterns.append({'key': 'valuation_price_divergence', 'name': '估值高与价格低背离', 'info': vpd_info})
-                except: pass
+                except Exception as e:
+                    print(f'[dailypick] {code} 估值标签检测失败: {e}')
                 # 用最新收盘价作为价格
                 cur_price = closes[-1] if closes else 0
                 cur_chg = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
@@ -2796,14 +2812,16 @@ def compute_daily_pick(period='morning'):
                             wkr = assess_weekly(wk)
                             if wkr['score'] >= 60: wk_bonus = 10
                             elif wkr['score'] >= 50: wk_bonus = 5
-                    except: pass
+                    except Exception as e:
+                        print(f'[dailypick] {code} 周线加分失败: {e}')
                     vp_bonus = 0
                     try:
                         from engine.indicators import classify_vp_relationship
                         vpr = classify_vp_relationship(k, baseline=120, recent=20)
                         if vpr['type'] in ('量增价升',): vp_bonus = 8
                         elif vpr['type'] in ('量减价升',): vp_bonus = 3
-                    except: pass
+                    except Exception as e:
+                        print(f'[dailypick] {code} 量价加分失败: {e}')
                     # 横盘启动加分
                     cb_bonus = 0
                     try:
@@ -2811,7 +2829,8 @@ def compute_daily_pick(period='morning'):
                         cb_ok, cb_info = pattern_consolidation_breakout(k)
                         if cb_ok:
                             cb_bonus = 12 if cb_info.get('score', 0) >= 30 else 8
-                    except: pass
+                    except Exception as e:
+                        print(f'[dailypick] {code} 横盘启动加分失败: {e}')
                     # 跳空加分（集合竞价结果）
                     gap_bonus = 0
                     try:
@@ -2825,7 +2844,8 @@ def compute_daily_pick(period='morning'):
                                 elif gap < -1.5 and sig in ('卖出', '减仓'): gap_bonus = 8
                                 elif gap > 1.5 and sig in ('卖出', '减仓'): gap_bonus = -5
                                 elif gap < -1.5 and sig in ('买入', '增持'): gap_bonus = -5
-                    except: pass
+                    except Exception as e:
+                        print(f'[dailypick] {code} 跳空加分失败: {e}')
                     boosted = decision['score'] + wk_bonus + vp_bonus + cb_bonus + gap_bonus
                     scored.append({
                         'code': code, 'market': s['market'], 'name': s.get('name', code),
