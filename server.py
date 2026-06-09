@@ -2796,6 +2796,21 @@ def compute_daily_pick(period='morning'):
                 # 用最新收盘价作为价格
                 cur_price = closes[-1] if closes else 0
                 cur_chg = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
+                # 早期启动所需指标
+                range_pos = 100
+                vol_ratio = 1.0
+                cum_3d_chg = 0
+                try:
+                    highs60 = [x['high'] for x in k[-60:]]
+                    lows60 = [x['low'] for x in k[-60:]]
+                    min60 = min(lows60); max60 = max(highs60)
+                    range_pos = (cur_price - min60) / (max60 - min60) * 100 if max60 > min60 else 100
+                    vols60 = [x['volume'] for x in k[-60:]]
+                    avg60 = sum(vols60) / len(vols60)
+                    vol_ratio = vols60[-1] / avg60 if avg60 > 0 else 1.0
+                    if len(closes) >= 4:
+                        cum_3d_chg = (closes[-1] - closes[-4]) / closes[-4] * 100
+                except: pass
                 q = quotes.get(code, {}) if isinstance(quotes, dict) else {}
                 decision = make_decision(closes, k, patterns, sr, sector_ctx,
                                          quote=q, code=code, market=s['market'])
@@ -2858,6 +2873,9 @@ def compute_daily_pick(period='morning'):
                         'patterns_found': pattern_names,
                         'method_agree': agree, 'total_methods': 7,
                         'sr': sr,
+                        'range_pos': round(range_pos, 1),
+                        'vol_ratio': round(vol_ratio, 2),
+                        'cum_3d_chg': round(cum_3d_chg, 2),
                     })
             except:
                 pass
@@ -2943,18 +2961,10 @@ def compute_daily_pick(period='morning'):
         for b in scored:
             if b.get('cb_bonus', 0) >= 8:
                 cb_total += 1
-        payload = {
-            'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
-            'status': 'ready', 'picks': pick_list,
-            'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'scanned_count': len(kline_map),
-            'scan_summary': {'consolidation_breakout': cb_total},
-        }
-        # 横盘突破特别关注（从落选股中检出，不占前2名额）
-        special_pick = None
+        # 横盘突破特别关注（从落选股中检出，作为第3个推荐）
         for b in scored:
             if b.get('cb_bonus', 0) >= 8 and b['code'] not in [p['code'] for p in pick_list]:
-                special_pick = {
+                cb_pick = {
                     'code': b['code'], 'market': b['market'], 'name': b['name'],
                     'price': b['price'], 'change_pct': b['change_pct'],
                     'signal': b['signal'], 'score': b['score'],
@@ -2964,12 +2974,45 @@ def compute_daily_pick(period='morning'):
                 }
                 for key, val in b['details'].items():
                     s = val.get('score', 50)
-                    special_pick['details'][key] = {'score': s, 'signal': '买入' if s>=75 else '增持' if s>=60 else '持有' if s>=45 else '卖出'}
+                    cb_pick['details'][key] = {'score': s, 'signal': '买入' if s>=75 else '增持' if s>=60 else '持有' if s>=45 else '卖出'}
+                pick_list.append(cb_pick)
                 break
-        if special_pick:
-            payload['special'] = special_pick
 
-        os.makedirs(os.path.dirname(DAILYPICK_FILE), exist_ok=True)
+        # 早期启动第4股：低位刚放量，刚启动但未透支
+        pick_codes = set(p['code'] for p in pick_list)
+        early_candidates = []
+        for b in scored:
+            if b['code'] in pick_codes: continue
+            if b.get('change_pct', 0) > 8: continue
+            if b.get('range_pos', 100) > 30: continue
+            if b.get('vol_ratio', 0) < 1.2: continue
+            if b.get('cum_3d_chg', 0) < 2 or b.get('cum_3d_chg', 0) > 15: continue
+            if b.get('score', 0) < 55: continue
+            early_candidates.append(b)
+        if early_candidates:
+            # 按价格低位优先、量比次优排序
+            early_candidates.sort(key=lambda r: (r.get('range_pos', 100), -r.get('vol_ratio', 0)))
+            best = early_candidates[0]
+            early_pick = {
+                'code': best['code'], 'market': best['market'], 'name': best['name'],
+                'price': best['price'], 'change_pct': best['change_pct'],
+                'signal': best['signal'], 'score': best['score'],
+                'details': {},
+                'top_reasons': [f'低位{best.get("range_pos",0):.0f}%启动,量比{best.get("vol_ratio",0):.1f},3日涨{best.get("cum_3d_chg",0):.1f}%'],
+                'risk_warning': '涨幅较大' if best['change_pct'] > 7 else '',
+            }
+            for key, val in best['details'].items():
+                s = val.get('score', 50)
+                early_pick['details'][key] = {'score': s, 'signal': '买入' if s>=75 else '增持' if s>=60 else '持有' if s>=45 else '卖出'}
+            pick_list.append(early_pick)
+
+        payload = {
+            'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
+            'status': 'ready', 'picks': pick_list,
+            'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'scanned_count': len(kline_map),
+            'scan_summary': {'consolidation_breakout': cb_total, 'early_rise': len(early_candidates) if 'early_candidates' in dir() else 0},
+        }
         with open(DAILYPICK_FILE, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
         names = ' + '.join([f'{p["name"]}({p["code"]}) sc={p["score"]}' for p in pick_list])

@@ -1179,6 +1179,8 @@ function renderDailyPick(data) {
     const sig = p.signal || "持有"
     const cls = sig === "买入" ? "badge-buy" : sig === "增持" ? "badge-watch" : sig === "持有" ? "badge-hold" : "badge-sell"
     const chg = p.change_pct || 0; const chgCls = chg >= 0 ? "up" : "down"; const chgSign = chg >= 0 ? "+" : ""
+    const cardLabel = idx === 0 ? '⭐ 今日推荐' : idx === 1 ? '⭐ 次选' : idx === 2 ? '🔄 横盘发现' : '🚀 早期启动'
+    const cardBg = idx === 3 ? 'rgba(0,200,100,.03)' : 'transparent'
     let dimHtml = ""
     for (const [key, label] of Object.entries(dimLabels)) {
       const d = p.details && p.details[key]; if (!d) continue
@@ -1201,7 +1203,8 @@ function renderDailyPick(data) {
     const vp = p.vp || {}
     const vpTxt = vp.label ? " 📊量价:" + vp.label : ""
     const riskTxt = p.risk_warning ? "<div style=\"font-size:10px;color:#ffa502;margin-top:4px\">⚠️" + p.risk_warning + "</div>" : ""
-    return "<div class=\"card\" style=\"padding:10px;margin-bottom:6px\">" +
+    return "<div class=\"card\" style=\"padding:10px;margin-bottom:6px;background:" + cardBg + "\">" +
+      (idx >= 2 ? "<div style=\"font-size:10px;color:" + (idx===2?"#ffa502":"#2ed573") + ";font-weight:600;margin-bottom:2px\">" + cardLabel + "</div>" : "") +
       "<div style=\"display:flex;justify-content:space-between;align-items:center\">" +
       "<div><span style=\"font-size:15px;font-weight:700\">" + p.name + "</span>" +
       "<span style=\"font-size:10px;color:#888;margin-left:6px\">" + p.code + "</span></div>" +
@@ -1223,7 +1226,7 @@ function renderDailyPick(data) {
   picks.forEach(function(p, i) { allHtml += pickCard(p, i) })
   if (data.scan_summary) {
     var _ss = data.scan_summary
-    allHtml += "<div style=\"font-size:10px;color:#888;text-align:center;padding:2px\">⚠ 横盘突破扫描: 符合条件 " + (_ss.consolidation_breakout || 0) + " 只</div>"
+    allHtml += "<div style=\"font-size:10px;color:#888;text-align:center;padding:2px\">⚠ 横盘突破 " + (_ss.consolidation_breakout || 0) + "只 · 🚀 早期启动 " + (_ss.early_rise || 0) + "只</div>"
   }
   allHtml += "<div style=\"text-align:center;font-size:10px;color:#555;margin-top:8px\">扫描" + scanned + "只 · " + (data.computed_at || "--") + "</div></div>"
   document.getElementById("dailypickContent").innerHTML = allHtml
