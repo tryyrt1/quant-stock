@@ -430,8 +430,8 @@ def score_to_signal(score):
     return "卖出"
 
 
-def assess_capital_flow(code, market):
-    """主力资金评分 (0-100) — 基于东方财富资金流数据"""
+def assess_capital_flow(code, market, klines=None):
+    """主力资金评分 (0-100) — 优先东方财富，失败时用OBV+量价推算"""
     if not code:
         return 0, ["暂无资金数据"]
 
@@ -445,26 +445,55 @@ def assess_capital_flow(code, market):
         r = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
         data = r.json()
         raw_klines = (data.get("data") or {}).get("klines") or []
-        if not raw_klines:
-            return 0, ["暂无资金数据"]
-    except Exception:
-        return 0, ["资金数据获取失败"]
+        if raw_klines:
+            records = []
+            for k in raw_klines[:10]:
+                parts = k.split(",")
+                if len(parts) >= 13:
+                    records.append({
+                        "date": parts[0],
+                        "main_net": float(parts[1]),
+                        "super_large": float(parts[2]),
+                        "large": float(parts[3]),
+                        "main_pct": float(parts[6]),
+                    })
+            if records:
+                return _score_from_eastmoney(records)
+    except:
+        pass
 
-    records = []
-    for k in raw_klines[:10]:
-        parts = k.split(",")
-        if len(parts) >= 13:
-            records.append({
-                "date": parts[0],
-                "main_net": float(parts[1]),   # 主力净流入(元)
-                "super_large": float(parts[2]), # 超大单净流入
-                "large": float(parts[3]),       # 大单净流入
-                "main_pct": float(parts[6]),    # 主力净占比(%)
-            })
+    # 东方财富失败 → 用 K 线 OBV + 量价推算
+    if klines and len(klines) >= 20:
+        from .indicators import calc_obv
+        closes = [k['close'] for k in klines]
+        vols = [k['volume'] for k in klines]
+        obv = calc_obv(klines)
+        if obv and len(obv) >= 20:
+            score = 50
+            reasons = ["资金流API不可用,OBV推算"]
+            # OBV 趋势
+            obv_trend = (obv[-1] - obv[-5]) / (abs(obv[-5]) or 1) * 100
+            if obv_trend > 3:
+                score += 15; reasons.append(f"OBV上升{obv_trend:.0f}%,资金流入")
+            elif obv_trend < -3:
+                score -= 15; reasons.append(f"OBV下降{abs(obv_trend):.0f}%,资金流出")
+            # 量价配合
+            avg_vol = sum(vols[-20:]) / 20
+            vol_ratio = vols[-1] / avg_vol if avg_vol else 1
+            chg = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
+            if vol_ratio > 1.5 and chg > 2:
+                score += 10; reasons.append(f"放量上涨(量比{vol_ratio:.1f})")
+            elif vol_ratio > 1.5 and chg < -2:
+                score -= 10; reasons.append(f"放量下跌(量比{vol_ratio:.1f})")
+            elif vol_ratio < 0.6 and chg > 0:
+                score -= 5; reasons.append("缩量上涨,动力不足")
+            return max(0, min(100, score)), reasons
 
-    if not records:
-        return 50, ["资金数据格式异常"]
+    return 0, ["暂无资金数据"]
 
+
+def _score_from_eastmoney(records):
+    """根据东方财富资金流数据计算评分"""
     score = 50
     reasons = []
     latest = records[0]
@@ -473,23 +502,18 @@ def assess_capital_flow(code, market):
     # 1. 当日主力净流入额
     main_wan = latest["main_net"] / 1e4
     if main_wan > 5000:
-        score += 15
-        reasons.append(f"主力净流入{main_wan:.0f}万")
+        score += 15; reasons.append(f"主力净流入{main_wan:.0f}万")
     elif main_wan > 1000:
-        score += 8
-        reasons.append(f"主力小幅流入{main_wan:.0f}万")
+        score += 8; reasons.append(f"主力小幅流入{main_wan:.0f}万")
     elif main_wan < -5000:
-        score -= 15
-        reasons.append(f"主力大幅流出{abs(main_wan):.0f}万")
+        score -= 15; reasons.append(f"主力大幅流出{abs(main_wan):.0f}万")
     elif main_wan < -1000:
-        score -= 8
-        reasons.append(f"主力小幅流出{abs(main_wan):.0f}万")
+        score -= 8; reasons.append(f"主力小幅流出{abs(main_wan):.0f}万")
 
     # 2. 累计 N 日净流向
     total_wan = sum(r["main_net"] for r in recent) / 1e4
     if total_wan > 10000 and len(recent) >= 3:
-        score += 10
-        reasons.append(f"{len(recent)}日累计净流入{total_wan:.0f}万")
+        score += 10; reasons.append(f"{len(recent)}日累计净流入{total_wan:.0f}万")
     elif total_wan < -10000 and len(recent) >= 3:
         score -= 10
         reasons.append(f"{len(recent)}日累计净流出{abs(total_wan):.0f}万")
@@ -550,7 +574,7 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
     vol_score, vol_reasons = assess_volume(closes, klines)
     sector_score, sector_reasons = assess_sector(sector_ctx)
     intraday_score, intraday_reasons = assess_intraday(quote, closes, klines)
-    capital_score, capital_reasons = assess_capital_flow(code, market)
+    capital_score, capital_reasons = assess_capital_flow(code, market, klines)
 
     weights = {
         "trend": 0.23,
