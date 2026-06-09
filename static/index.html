@@ -1183,15 +1183,17 @@ function renderDailyPick(data) {
     for (const [key, label] of Object.entries(dimLabels)) {
       const d = p.details && p.details[key]; if (!d) continue
       const s = d.score || 0; const sig2 = d.signal || "持有"
-      const barW = Math.min(100, Math.max(5, s))
-      const barC = s >= 75 ? "#2ed573" : s >= 60 ? "#ffa502" : s >= 45 ? "#ffd93d" : "#ff4757"
+      const noData = s === 0
+      const barW = noData ? 0 : Math.min(100, Math.max(5, s))
+      const barC = noData ? "#555" : s >= 75 ? "#2ed573" : s >= 60 ? "#ffa502" : s >= 45 ? "#ffd93d" : "#ff4757"
       const reasons = d.reasons && d.reasons.length ? d.reasons.join("；") : ""
       dimHtml += "<div style=\"margin:4px 0;padding:4px 6px;background:rgba(255,255,255,.02);border-radius:4px\">" +
         "<div style=\"display:flex;justify-content:space-between;align-items:center\">" +
         "<span style=\"font-size:10px;color:#ccc\">" + (dimIcons[key]||"") + " " + label + "</span>" +
-        "<span style=\"font-size:10px;color:" + barC + ";font-weight:600\">" + sig2 + " " + s + "</span></div>" +
-        "<div style=\"height:3px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden\">" +
-        "<div style=\"height:100%;width:" + barW + "%;background:" + barC + ";border-radius:2px\"></div></div>" +
+        (noData ? "<span style=\"font-size:10px;color:#555\">暂无数据</span>" :
+        "<span style=\"font-size:10px;color:" + barC + ";font-weight:600\">" + sig2 + " " + s + "</span>") + "</div>" +
+        (noData ? "" : "<div style=\"height:3px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden\">" +
+        "<div style=\"height:100%;width:" + barW + "%;background:" + barC + ";border-radius:2px\"></div></div>") +
         (reasons ? "<div style=\"font-size:9px;color:#888;margin-top:1px\">" + reasons + "</div>" : "") + "</div>"
     }
     const wk = p.weekly_signals || {}

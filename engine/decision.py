@@ -224,7 +224,7 @@ def calc_obv_from_klines(klines):
 def assess_sector(sector_ctx=None):
     """板块评分 (0-100), 权重15%"""
     if not sector_ctx:
-        return 50, ["暂无板块数据"]
+        return 0, ["暂无板块数据"]
 
     score = 50
     reasons = []
@@ -433,7 +433,7 @@ def score_to_signal(score):
 def assess_capital_flow(code, market):
     """主力资金评分 (0-100) — 基于东方财富资金流数据"""
     if not code:
-        return 50, ["暂无资金数据"]
+        return 0, ["暂无资金数据"]
 
     secid = "1." + code if market == "sh" else "0." + code
     url = ("http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?"
@@ -446,9 +446,9 @@ def assess_capital_flow(code, market):
         data = r.json()
         raw_klines = (data.get("data") or {}).get("klines") or []
         if not raw_klines:
-            return 50, ["暂无资金数据"]
+            return 0, ["暂无资金数据"]
     except Exception:
-        return 50, ["资金数据获取失败"]
+        return 0, ["资金数据获取失败"]
 
     records = []
     for k in raw_klines[:10]:
