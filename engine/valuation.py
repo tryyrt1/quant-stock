@@ -47,28 +47,22 @@ def finance_data(code, years=3):
         except:
             pass
 
-        # 利润表: 取最新年度数据中的 epsTTM、ROE、总股本
+        # 利润表: 仅取年报（Q4）数据，确保 epsTTM 和 roeAvg 都是全年口径
         eps_ttm = 0
         roe = 0
         total_share = 0
         for y in reversed(year_range):
-            # 先试 Q4（年报）
-            for q in (4, 3, 2, 1):
-                rs = bs.query_profit_data(full_code, y, q)
-                if rs.error_code == '0' and rs.data and rs.data[0]:
-                    row = rs.data[0]
-                    d = {rs.fields[i]: _to_num(row[i]) for i in range(min(len(rs.fields), len(row)))}
-                    if d.get('epsTTM', 0):
-                        eps_ttm = d['epsTTM']
-                        roe = d.get('roeAvg', 0) or 0
-                        total_share = d.get('totalShare', 0) or 0
-                        result['profit_year'] = y
-                        result['profit_quarter'] = q
-                        break
-                if eps_ttm:
+            rs = bs.query_profit_data(full_code, y, 4)
+            if rs.error_code == '0' and rs.data and rs.data[0]:
+                row = rs.data[0]
+                d = {rs.fields[i]: _to_num(row[i]) for i in range(min(len(rs.fields), len(row)))}
+                if d.get('epsTTM', 0):
+                    eps_ttm = d['epsTTM']
+                    roe = d.get('roeAvg', 0) or 0
+                    total_share = d.get('totalShare', 0) or 0
+                    result['profit_year'] = y
+                    result['profit_quarter'] = 4
                     break
-            if eps_ttm:
-                break
 
         if eps_ttm:
             result['eps_ttm'] = eps_ttm
