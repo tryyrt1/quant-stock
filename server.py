@@ -2810,6 +2810,13 @@ def compute_daily_pick(period='morning'):
                     vol_ratio = vols60[-1] / avg60 if avg60 > 0 else 1.0
                     if len(closes) >= 4:
                         cum_3d_chg = (closes[-1] - closes[-4]) / closes[-4] * 100
+                    # 放量异动指标
+                    vol_day_ratio = 0
+                    is_green = False
+                    if len(k) >= 2:
+                        vol_day_ratio = k[-1]['volume'] / k[-2]['volume'] if k[-2]['volume'] > 0 else 0
+                    if k:
+                        is_green = k[-1]['close'] > k[-1]['open']
                 except: pass
                 q = quotes.get(code, {}) if isinstance(quotes, dict) else {}
                 decision = make_decision(closes, k, patterns, sr, sector_ctx,
@@ -2885,6 +2892,8 @@ def compute_daily_pick(period='morning'):
                         'range_pos': round(range_pos, 1),
                         'vol_ratio': round(vol_ratio, 2),
                         'cum_3d_chg': round(cum_3d_chg, 2),
+                        'vol_day_ratio': round(vol_day_ratio, 2),
+                        'is_green': is_green,
                     })
             except:
                 pass
@@ -3011,12 +3020,48 @@ def compute_daily_pick(period='morning'):
                 early_pick['details'][key] = {'score': s, 'signal': '买入' if s>=75 else '增持' if s>=60 else '持有' if s>=45 else '卖出'}
             pick_list.append(early_pick)
 
+        # 低位放量异动第5-6股：热点板块 + 低位 + 突然放量阳线
+        pick_codes = set(p['code'] for p in pick_list)
+        # 取热度前20板块的成分股代码
+        hot_sector_codes = set()
+        try:
+            sector_sorted = sorted(sector_list, key=lambda x: -x.get('heat', 0))
+            for sec in sector_sorted[:20]:
+                for stk in sec.get('stocks', []):
+                    hot_sector_codes.add(stk.get('code', ''))
+        except: pass
+        volume_candidates = []
+        for b in scored:
+            if b['code'] in pick_codes: continue
+            if b['code'] not in hot_sector_codes: continue
+            if b.get('range_pos', 100) > 35: continue
+            if not b.get('is_green'): continue
+            if b.get('vol_day_ratio', 0) < 2.5: continue
+            if b.get('change_pct', 0) > 9: continue
+            volume_candidates.append(b)
+        if volume_candidates:
+            volume_candidates.sort(key=lambda r: -r.get('vol_day_ratio', 0))
+            for best in volume_candidates[:2]:
+                vol_pick = {
+                    'code': best['code'], 'market': best['market'], 'name': best['name'],
+                    'price': best['price'], 'change_pct': best['change_pct'],
+                    'signal': best['signal'], 'score': best['score'],
+                    'details': {},
+                    'top_reasons': [f'低位{best.get("range_pos",0):.0f}%放量{best.get("vol_day_ratio",0):.1f}倍阳线'],
+                    'risk_warning': '涨幅较大' if best['change_pct'] > 7 else '',
+                }
+                for key, val in best['details'].items():
+                    s = val.get('score', 50)
+                    vol_pick['details'][key] = {'score': s, 'signal': '买入' if s>=75 else '增持' if s>=60 else '持有' if s>=45 else '卖出'}
+                pick_list.append(vol_pick)
+                pick_codes.add(best['code'])
+
         payload = {
             'period': period, 'valid_from': valid_from, 'valid_until': valid_until,
             'status': 'ready', 'picks': pick_list,
             'computed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
             'scanned_count': len(kline_map),
-            'scan_summary': {'consolidation_breakout': cb_total, 'early_rise': len(early_candidates) if 'early_candidates' in dir() else 0},
+            'scan_summary': {'consolidation_breakout': cb_total, 'early_rise': len(early_candidates) if 'early_candidates' in dir() else 0, 'volume_surge': len(volume_candidates) if 'volume_candidates' in dir() else 0},
         }
         with open(DAILYPICK_FILE, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False)
