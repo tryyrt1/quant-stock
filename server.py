@@ -3022,18 +3022,9 @@ def compute_daily_pick(period='morning'):
 
         # 低位放量异动第5-6股：热点板块 + 低位 + 突然放量阳线
         pick_codes = set(p['code'] for p in pick_list)
-        # 取热度前20板块的成分股代码
-        hot_sector_codes = set()
-        try:
-            sector_sorted = sorted(sector_list, key=lambda x: -x.get('heat', 0))
-            for sec in sector_sorted[:20]:
-                for stk in sec.get('stocks', []):
-                    hot_sector_codes.add(stk.get('code', ''))
-        except: pass
         volume_candidates = []
         for b in scored:
             if b['code'] in pick_codes: continue
-            if b['code'] not in hot_sector_codes: continue
             if b.get('range_pos', 100) > 35: continue
             if not b.get('is_green'): continue
             if b.get('vol_day_ratio', 0) < 2.5: continue
