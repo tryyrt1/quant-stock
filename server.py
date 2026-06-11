@@ -2084,17 +2084,7 @@ def stock_plunge_api(code):
     except:
         pass
 
-    # 6. 资金流
-    try:
-        from engine.decision import assess_capital_flow
-        cap_score, cap_reasons = assess_capital_flow(code, market)
-        if cap_score < 40:
-            cap_detail = '；'.join(cap_reasons) if cap_reasons else '资金面偏空'
-            reasons.append({'dim': 'capital', 'label': '资金流出', 'detail': cap_detail})
-    except:
-        pass
-
-    # 7. 技术破位
+    # 6. 技术破位
     try:
         from engine.indicators import calc_support_resistance
         sr = calc_support_resistance(kline)
@@ -2886,7 +2876,7 @@ def compute_daily_pick(period='morning'):
                         'details': decision.get('details', {}),
                         'reasons': decision.get('reasons', []),
                         'patterns_found': pattern_names,
-                        'method_agree': agree, 'total_methods': 7,
+                        'method_agree': agree, 'total_methods': 6,
                         'sr': sr,
                         'vp_label': _vp_label,
                         'range_pos': round(range_pos, 1),
@@ -2957,7 +2947,7 @@ def compute_daily_pick(period='morning'):
             risk_parts = []
             if best['change_pct'] > 7:
                 risk_parts.append(f'涨幅较大({best["change_pct"]}%)')
-            if best['method_agree'] < 4:
+            if best['method_agree'] < 3:
                 risk_parts.append('方法分歧较大')
             pick['risk_warning'] = ';'.join(risk_parts) if risk_parts else ''
             pick_list.append(pick)

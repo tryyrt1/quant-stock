@@ -363,7 +363,7 @@ def fetch_all_boards():
         return []
 
 
-def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
+def fetch_hot_boards(fetch_kline_func, top_n=30, max_stocks=15):
     """取全市场最热的 N 个板块，基于 CONCEPT_MAP + Tencent 实时行情
     两步筛选: 先用涨跌比初筛 top_n*2，再拉 K 线做形态识别精算
     返回 {sectors: [...], total_sectors, total_stocks, total_patterns}
@@ -494,124 +494,14 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
 
     sectors_list = sorted(sectors_data.values(), key=lambda x: -x["heat"])[:top_n]
 
-    # ── Step 3: 全板块资金流聚合（从全部 CONCEPT_MAP，非仅热度前 N）──
-    # 收集全部板块的全部成分股（去重）
-    all_stocks_all = {}
-    for name, stocks in CONCEPT_MAP.items():
-        for code, market, cname in stocks:
-            key = f"{market}_{code}"
-            if key not in all_stocks_all:
-                all_stocks_all[key] = (code, market)
+    sectors_list = sorted(sectors_data.values(), key=lambda x: -x["heat"])[:top_n]
 
-    stock_flow_cache = {}
-
-    def _fetch_flow(code, market):
-        key = f"{market}_{code}"
-        if key in stock_flow_cache:
-            return stock_flow_cache[key]
-        try:
-            secid = "1." + code if market == "sh" else "0." + code
-            url = ("http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?"
-                   f"secid={secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,"
-                   f"f55,f56,f57,f58,f59,f60,f61,f62,f63")
-            import requests as req
-            r = req.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
-            data = r.json()
-            klines = (data.get("data") or {}).get("klines") or []
-            if klines:
-                parts = klines[0].split(",")
-                if len(parts) >= 13:
-                    net = float(parts[1])  # 主力净流入(元)
-                    stock_flow_cache[key] = net
-                    return net
-        except Exception as e:
-            print(f'[sectors] 资金流API失败 {code}: {e}')
-
-        # API不可用 → OBV推算估算净流
-        try:
-            k = fetch_kline_func(market + code, 30)
-            if k and len(k) >= 10:
-                closes = [x['close'] for x in k]
-                vols = [x['volume'] for x in k]
-                avg_price = sum(closes[-10:]) / 10
-                up_vol = sum(vols[i] for i in range(-10, 0) if closes[i] > closes[i-1])
-                down_vol = sum(vols[i] for i in range(-10, 0) if closes[i] < closes[i-1])
-                net_est = (up_vol - down_vol) * avg_price  # 估算净流(元)
-                stock_flow_cache[key] = net_est
-                return net_est
-        except Exception as e:
-            print(f'[sectors] OBV推算失败 {code}: {e}')
-
-        stock_flow_cache[key] = 0
-        return 0
-
-    # 并发取全部成分股资金流
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
-        fut_map = {exe.submit(_fetch_flow, c, m): (c, m) for c, m in all_stocks_all.values()}
-        for f in concurrent.futures.as_completed(fut_map):
-            pass  # cache 已在 _fetch_flow 中填充
-
-    # 计算每个板块的资金净流入
-    all_sector_flows = []
-    for name, stocks in CONCEPT_MAP.items():
-        total_net = 0
-        valid_count = 0
-        for code, market, cname in stocks:
-            net = stock_flow_cache.get(f"{market}_{code}", 0)
-            total_net += net
-            if net != 0:
-                valid_count += 1
-        net_flow_wan = round(total_net / 1e4, 0)
-        all_sector_flows.append({"name": name, "net_flow": net_flow_wan, "flow_stock_count": valid_count})
-
-    # 资金流入排名（全板块排序，记录每个板块的排位）
-    flow_ranked = sorted(all_sector_flows, key=lambda x: -x["net_flow"])
-    flow_rank_map = {r["name"]: i + 1 for i, r in enumerate(flow_ranked)}
-    flow_top10_names = [r["name"] for r in flow_ranked[:10]]
-
-    # 热度 Top 3（sectors_data 中已有 heat 的板块）
-    heat_ranked_all = sorted(sectors_data.values(), key=lambda x: -x["heat"])
-
-    # 构建资金流入榜列表（前10名）
-    flow_list = []
-    for item in flow_ranked[:10]:
-        sc_key = f"sector_{item['name']}"
-        sd = sectors_data.get(sc_key)
-        entry = {
-            "name": item["name"],
-            "net_flow": item["net_flow"],
-            "flow_rank": flow_rank_map.get(item["name"]),
-            "flow_stock_count": item.get("flow_stock_count", 0),
-        }
-        if sd:
-            for k, v in sd.items():
-                if k not in ("name", "net_flow"):
-                    entry[k] = v
-        entry["type"] = "hot_concept"
-        flow_list.append(entry)
-
-    # 热度榜 Top 10（跳过已在资金榜中的）
-    heat_list = []
-    flow_names_set = set(flow_top10_names)
-    for sd in heat_ranked_all:
-        if len(heat_list) >= 10:
-            break
-        if sd["name"] in flow_names_set:
-            continue
-        sd["heat_rank"] = len(heat_list) + 1
-        sd["flow_rank"] = flow_rank_map.get(sd["name"])
-        sd["net_flow"] = None
-        sd["flow_stock_count"] = None
-        fi = next((x for x in flow_ranked if x["name"] == sd["name"]), None)
-        if fi:
-            sd["net_flow"] = fi["net_flow"]
-            sd["flow_stock_count"] = fi.get("flow_stock_count", 0)
-        heat_list.append(sd)
-
-    final_sectors = flow_list + heat_list
+    final_sectors = []
+    for i, sd in enumerate(sectors_list):
+        sd["heat_rank"] = i + 1
+        final_sectors.append(sd)
 
     return {
-        "sectors": final_sectors,
         "total_sectors": len(final_sectors),
         "total_stocks": sum(sd.get("stock_count", 0) for sd in final_sectors if sd.get("stock_count")),
         "total_patterns": sum(sd.get("pattern_count", 0) for sd in final_sectors),

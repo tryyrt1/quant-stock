@@ -1275,12 +1275,7 @@ function renderHotSectors(sectors) {
     const heatCls = heatVal >= 70 ? '#ff4757' : heatVal >= 55 ? '#ffa502' : heatVal >= 40 ? '#00d2ff' : '#888'
     const chgCls = (sec.change_pct||0) >= 0 ? 'up' : 'down'
     const chgStr = sec.change_pct ? `${sec.change_pct >= 0 ? '+' : ''}${sec.change_pct}%` : ''
-    const rankLabels = []
-    if (sec.flow_rank) rankLabels.push(`💰估算资金第${sec.flow_rank}名`)
-    if (sec.heat_rank) rankLabels.push(`🔥热度第${sec.heat_rank}名`)
-    const rankLabel = rankLabels.join(' · ')
-    const flowStr = sec.net_flow ? `${sec.net_flow >= 0 ? '+' : ''}${sec.net_flow}万(估)` : ''
-    const flowCls = sec.net_flow > 0 ? '#2ed573' : sec.net_flow < 0 ? '#ff4757' : '#888'
+    const rankLabel = sec.heat_rank ? `🔥热度第${sec.heat_rank}名` : ''
 
     html += `<div class="card" style="border-left:3px solid ${heatCls};padding:10px 14px">
       <div style="display:flex;justify-content:space-between;align-items:center">
@@ -1290,15 +1285,13 @@ function renderHotSectors(sectors) {
           <span style="font-size:10px;color:var(--dim);margin-left:6px">${sec.type === 'hot_concept' ? '概念' : '行业'}</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
-          ${flowStr ? `<span style="font-size:11px;color:${flowCls};font-weight:600">💰${flowStr}</span>` : ''}
-          ${sec.flow_stock_count != null ? `<span style="font-size:9px;color:#666;margin-left:4px">${sec.flow_stock_count}只</span>` : ''}
           <span style="font-size:11px;color:${heatCls};font-weight:600">${sec.heat_signal || sec.heat}</span>
           <span class="${chgCls}" style="font-size:12px;font-weight:600">${chgStr}</span>
         </div>
       </div>
       ${sec.heat != null ? '<div style="margin:4px 0;height:4px;background:rgba(255,255,255,.06);border-radius:2px"><div style="width:' + Math.min(100,sec.heat) + '%;height:100%;background:' + heatCls + ';border-radius:2px"></div></div>' : ''}
       <div style="display:flex;justify-content:space-between;font-size:10px;color:#888">
-        ${sec.stock_count != null ? '<span>上涨 ' + (sec.up_count||0) + '/' + sec.stock_count + ' | 形态 ' + (sec.pattern_count||0) + '</span>' : '<span>成分股 ' + (sec.flow_stock_count||0) + '只有资金数据</span>'}
+        <span>上涨 ${sec.up_count||0}/${sec.stock_count||0} | 形态 ${sec.pattern_count||0}</span>
         ${sec.prediction ? '<span style="color:#aaa;flex:1;text-align:right;margin-left:8px">' + sec.prediction + '</span>' : ''}
       </div>
       ${sec.news_signal ? `<div style="font-size:10px;color:#ffa502;margin-top:2px">📰 ${sec.news_signal}</div>` : ''}

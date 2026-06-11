@@ -616,16 +616,14 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
     vol_score, vol_reasons = assess_volume(closes, klines)
     sector_score, sector_reasons = assess_sector(sector_ctx)
     intraday_score, intraday_reasons = assess_intraday(quote, closes, klines)
-    capital_score, capital_reasons = assess_capital_flow(code, market, klines)
 
     weights = {
-        "trend": 0.23,
-        "patterns": 0.17,
-        "price_level": 0.15,
-        "volume": 0.08,
-        "sector": 0.10,
+        "trend": 0.28,
+        "patterns": 0.20,
+        "price_level": 0.17,
+        "volume": 0.10,
+        "sector": 0.15,
         "intraday": 0.10,
-        "capital": 0.17,
     }
 
     total = (
@@ -635,7 +633,6 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
         + vol_score * weights["volume"]
         + sector_score * weights["sector"]
         + intraday_score * weights["intraday"]
-        + capital_score * weights["capital"]
     )
     total = round(max(0, min(100, total)), 1)
 
@@ -654,14 +651,13 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
         "volume": {"score": vol_score, "signal": score_to_signal(vol_score)},
         "sector": {"score": sector_score, "signal": score_to_signal(sector_score)},
         "intraday": {"score": intraday_score, "signal": score_to_signal(intraday_score)},
-        "capital": {"score": capital_score, "signal": score_to_signal(capital_score)},
     }
 
     # 汇总理由 (每个维度取前2条)
     all_reasons = []
     seen = set()
     for r in (trend_reasons + pat_reasons + level_reasons + vol_reasons
-              + sector_reasons + capital_reasons):
+              + sector_reasons):
         if r not in seen:
             seen.add(r)
             all_reasons.append(r)
@@ -678,7 +674,6 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
                 'volume': details.get('volume', {}).get('score', 50),
                 'sector': details.get('sector', {}).get('score', 50),
                 'intraday': details.get('intraday', {}).get('score', 50),
-                'capital': details.get('capital', {}).get('score', 50),
                 'total_score': total_score,
                 'signal': signal,
             }
