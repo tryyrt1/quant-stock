@@ -462,31 +462,73 @@ def assess_capital_flow(code, market, klines=None):
     except:
         pass
 
-    # 东方财富失败 → 用 K 线 OBV + 量价推算
-    if klines and len(klines) >= 20:
+    # 东方财富失败 → 用 K 线 OBV + 量价推算（多维度加权）
+    if klines and len(klines) >= 30:
         from .indicators import calc_obv
         closes = [k['close'] for k in klines]
+        highs = [k['high'] for k in klines]
+        lows = [k['low'] for k in klines]
         vols = [k['volume'] for k in klines]
         obv = calc_obv(klines)
-        if obv and len(obv) >= 20:
+        if obv and len(obv) >= 30:
             score = 50
-            reasons = ["资金流API不可用,OBV推算"]
-            # OBV 趋势
-            obv_trend = (obv[-1] - obv[-5]) / (abs(obv[-5]) or 1) * 100
-            if obv_trend > 3:
-                score += 15; reasons.append(f"OBV上升{obv_trend:.0f}%,资金流入")
-            elif obv_trend < -3:
-                score -= 15; reasons.append(f"OBV下降{abs(obv_trend):.0f}%,资金流出")
-            # 量价配合
-            avg_vol = sum(vols[-20:]) / 20
-            vol_ratio = vols[-1] / avg_vol if avg_vol else 1
-            chg = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
-            if vol_ratio > 1.5 and chg > 2:
-                score += 10; reasons.append(f"放量上涨(量比{vol_ratio:.1f})")
-            elif vol_ratio > 1.5 and chg < -2:
-                score -= 10; reasons.append(f"放量下跌(量比{vol_ratio:.1f})")
-            elif vol_ratio < 0.6 and chg > 0:
-                score -= 5; reasons.append("缩量上涨,动力不足")
+            reasons = ["资金流OBV推算"]
+
+            # 1. 多周期OBV趋势（权重递增）
+            for period, weight in [(5, 1), (10, 1.5), (20, 2)]:
+                if len(obv) > period:
+                    trend = (obv[-1] - obv[-period - 1]) / (abs(obv[-period - 1]) or 1) * 100
+                    if trend > 5:
+                        score += 3 * weight; reasons.append(f"OBV{period}日上升{trend:.0f}%")
+                    elif trend < -5:
+                        score -= 3 * weight; reasons.append(f"OBV{period}日下降{abs(trend):.0f}%")
+
+            # 2. 主动买卖量比：近10日上涨日成交量 vs 下跌日成交量
+            if len(closes) >= 10:
+                up_vol = sum(vols[i] for i in range(-10, 0) if closes[i] > closes[i - 1])
+                down_vol = sum(vols[i] for i in range(-10, 0) if closes[i] < closes[i - 1])
+                total_vol = up_vol + down_vol
+                if total_vol > 0:
+                    buy_ratio = up_vol / down_vol if down_vol > 0 else 3
+                    buy_pct = up_vol / total_vol * 100
+                    if buy_ratio > 1.5:
+                        score += 12; reasons.append(f"主动买量占{buy_pct:.0f}%,偏流入")
+                    elif buy_ratio > 1.2:
+                        score += 6; reasons.append(f"买量略多({buy_pct:.0f}%)")
+                    elif buy_ratio < 0.67:
+                        score -= 12; reasons.append(f"主动卖量占{100-buy_pct:.0f}%,偏流出")
+                    elif buy_ratio < 0.8:
+                        score -= 6; reasons.append(f"卖量略多({100-buy_pct:.0f}%)")
+                # 估算净流金额
+                avg_price = sum(closes[-10:]) / 10
+                net_flow_est = (up_vol - down_vol) * avg_price
+                flow_wan = abs(net_flow_est) / 1e4
+                if net_flow_est > 0 and flow_wan > 100:
+                    reasons.append(f"估算净流入{flow_wan:.0f}万")
+                elif net_flow_est < 0 and flow_wan > 100:
+                    reasons.append(f"估算净流出{flow_wan:.0f}万")
+
+            # 3. 近期大单意向：单日放量+大涨幅=主动攻击
+            avg_vol = sum(vols[-20:]) / 20 if len(vols) >= 20 else sum(vols) / len(vols)
+            big_bar_count = 0
+            for i in range(-5, 0):
+                if i < -len(vols): continue
+                vr = vols[i] / avg_vol if avg_vol > 0 else 1
+                chg_i = (closes[i] - closes[i - 1]) / closes[i - 1] * 100 if abs(i) <= len(closes) else 0
+                if vr > 1.5 and chg_i > 2:
+                    big_bar_count += 1
+                    if i == -1: score += 10; reasons.append(f"当日放量{vr:.1f}倍上涨,主动买入")
+            if big_bar_count >= 2 and big_bar_count < 5:
+                score += 8; reasons.append(f"近5日{big_bar_count}次放量拉升")
+            elif big_bar_count >= 5:
+                score += 15; reasons.append(f"频繁放量拉升{big_bar_count}次")
+
+            # 4. 缩量调整（健康的资金沉淀）
+            chg_today = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
+            vr_today = vols[-1] / avg_vol if avg_vol > 0 else 1
+            if vr_today < 0.7 and -1 < chg_today < 1:
+                score += 5; reasons.append(f"缩量整理(量比{vr_today:.1f}),抛压轻")
+
             return max(0, min(100, score)), reasons
 
     return 0, ["暂无资金数据"]
