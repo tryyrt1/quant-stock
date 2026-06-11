@@ -600,6 +600,12 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
             continue
         sd["heat_rank"] = len(heat_list) + 1
         sd["flow_rank"] = flow_rank_map.get(sd["name"])
+        sd["net_flow"] = None
+        sd["flow_stock_count"] = None
+        fi = next((x for x in flow_ranked if x["name"] == sd["name"]), None)
+        if fi:
+            sd["net_flow"] = fi["net_flow"]
+            sd["flow_stock_count"] = fi.get("flow_stock_count", 0)
         heat_list.append(sd)
 
     final_sectors = flow_list + heat_list
