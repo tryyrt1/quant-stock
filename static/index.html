@@ -223,35 +223,19 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     <div id="patternResults"></div>
   </div>
 
-  <!-- ===== 板块追踪页 ===== -->
-  <div id="page-sectors" class="hide">
-    <div class="card">
-      <div class="card-title">🧩 板块追踪</div>
-      <div style="font-size:12px;color:#aaa;margin-bottom:10px">选择板块 → 扫描成分股技术形态</div>
-      <div id="sectorGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
-        <!-- filled by JS -->
-      </div>
-      <div class="refresh-bar">
-        <span class="info" id="sectorInfo">选择板块并扫描</span>
-        <button id="btnSectorScan" onclick="scanSectors()" class="btn btn-secondary" style="font-size:11px;line-height:28px">🔍 扫描板块</button>
-      </div>
-      <div class="add-row" style="margin-top:6px">
-        <input id="customSectorInput" placeholder="输入自定义板块名(如：算力) 回车添加" style="flex:1;font-size:12px;padding:6px 10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#ccc" onkeydown="if(event.key==='Enter')addCustomSector()">
-        <button onclick="addCustomSector()" style="font-size:11px;padding:6px 10px;margin-left:4px">添加</button>
-      </div>
-      <div style="font-size:10px;color:#555;margin-top:4px" id="sectorScanInfo"></div>
-    </div>
-    <div id="hotSectorsContainer">
-      <div class="card">
-        <div class="card-title">🔥 今日异动板块 Top 8 <span style="font-size:11px;color:#888;font-weight:400">全市场热度排名</span></div>
-        <div class="refresh-bar">
-          <span class="info" id="hotSectorsInfo">自动扫描中...</span>
-          <button onclick="loadHotSectors()" style="font-size:11px;padding:4px 10px;background:rgba(255,71,87,.15);border:1px solid rgba(255,71,87,.3);color:#ff4757;border-radius:6px;cursor:pointer">🔄 刷新</button>
-        </div>
-        <div id="hotSectorsResult"><div style="text-align:center;padding:12px"><span class="spinner"></span>加载中...</div></div>
-      </div>
-    </div>
-    <div id="sectorResults"></div>
+  	  <!-- ===== 板块追踪页 ===== -->
+	  <div id="page-sectors" class="hide">
+	    <div id="hotSectorsContainer">
+	      <div class="card">
+	        <div class="card-title">🔥 热度排行 Top 30 <span style="font-size:11px;color:#888;font-weight:400">全市场热度排名（前30）</span></div>
+	        <div class="refresh-bar">
+	          <span class="info" id="hotSectorsInfo">自动扫描中...</span>
+	          <button onclick="loadHotSectors()" style="font-size:11px;padding:4px 10px;background:rgba(255,71,87,.15);border:1px solid rgba(255,71,87,.3);color:#ff4757;border-radius:6px;cursor:pointer">🔄 刷新</button>
+	        </div>
+	        <div id="hotSectorsResult"><div style="text-align:center;padding:12px"><span class="spinner"></span>加载中...</div></div>
+	      </div>
+	    </div>
+	    <div id="sectorResults"></div>
   </div>
 
   <!-- ===== 宏观/商品页 ===== -->
