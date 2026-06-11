@@ -1430,6 +1430,25 @@ def sectors_scan_api():
     return jsonify(result)
 
 
+@app.route('/api/sectors/heat-history')
+def sector_heat_history_api():
+    """返回近5日热度前15的板块及进入前10次数"""
+    heat_file = os.path.join(DATA_DIR, 'snapshots', 'sector_heat.json')
+    if not os.path.exists(heat_file):
+        return jsonify([])
+    try:
+        history = json.load(open(heat_file))
+        recent = history[-5:]
+        counts = {}
+        for day in recent:
+            for name in day.get("top10", []):
+                counts[name] = counts.get(name, 0) + 1
+        ranked = sorted(counts.items(), key=lambda x: -x[1])[:15]
+        return jsonify([{"name": n, "count": c} for n, c in ranked])
+    except:
+        return jsonify([])
+
+
 @app.route('/api/sectors/hot', methods=['POST'])
 def sectors_hot_api():
     """全市场异动板块 Top N（优先从缓存快速读取）"""
@@ -3138,6 +3157,22 @@ def _run_scheduled_scans():
             result['time'] = time.strftime('%H:%M')
             _save_snapshot('sectors.json', result)
             print(f'[scheduler] 板块追踪: {result["total_patterns"]} 个形态, {len(codes)} 板块')
+            # 记录本日板块热度前10
+            try:
+                secs = result.get("sectors", [])
+                secs.sort(key=lambda x: -x.get("heat", 0))
+                top10 = [s["name"] for s in secs[:10]]
+                heat_file = os.path.join(DATA_DIR, 'snapshots', 'sector_heat.json')
+                history = json.load(open(heat_file)) if os.path.exists(heat_file) else []
+                today = time.strftime('%Y-%m-%d')
+                if not history or history[-1].get("date") != today:
+                    history.append({"date": today, "top10": top10})
+                else:
+                    history[-1]["top10"] = top10  # 当日多次扫描则更新
+                history = history[-30:]
+                json.dump(history, open(heat_file, 'w'), ensure_ascii=False)
+            except Exception as e:
+                print(f'[scheduler] 热度记录失败: {e}')
             if is_record:
                 for sec in result.get("sectors", []):
                     for stk in sec.get("stocks", []):
