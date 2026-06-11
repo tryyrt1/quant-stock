@@ -42,3 +42,19 @@
 - `server.py` — heat-history API + 调度器热度记录逻辑
 - `static/index.html` — loadHeatHistory渲染函数
 - `engine/decision.py` — 6维评分系统
+
+---
+
+## 已安装的股票Skills
+
+**本机skills（直接可用）：**
+- baostock, market-overview, stock-screener, realtime-monitor, smart-money-tracker, stock-analyst
+- china-comps-analysis, china-dcf-model, china-initiating-coverage, china-macro-overview
+- competitive-analysis, comps-analysis, idea-generation, pptx-author, sector-overview, tushare-data, xlsx-author
+- chen-yiwei-perspective, tianchuan-perspective, chenyiwei-bbs
+
+**插件skills（下次新会话生效）：**
+- 63个: china-finance(31), investment-banking(10), private-equity(9), wealth-management(5), fund-admin(6), operations(2)
+
+**克隆到本地的仓库：**
+- baostock-skill, stock-sdk-mcp, china-financial-services, nigo-skills
