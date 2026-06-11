@@ -1275,10 +1275,10 @@ function renderHotSectors(sectors) {
     const chgCls = sec.change_pct >= 0 ? 'up' : 'down'
     const chgStr = sec.change_pct ? `${sec.change_pct >= 0 ? '+' : ''}${sec.change_pct}%` : ''
     const rankLabels = []
-    if (sec.flow_rank) rankLabels.push(`💰资金流入第${sec.flow_rank}名`)
+    if (sec.flow_rank) rankLabels.push(`💰估算资金第${sec.flow_rank}名`)
     if (sec.heat_rank) rankLabels.push(`🔥热度第${sec.heat_rank}名`)
     const rankLabel = rankLabels.join(' · ')
-    const flowStr = sec.net_flow ? `${sec.net_flow >= 0 ? '+' : ''}${sec.net_flow}万` : ''
+    const flowStr = sec.net_flow ? `${sec.net_flow >= 0 ? '+' : ''}${sec.net_flow}万(估)` : ''
     const flowCls = sec.net_flow > 0 ? '#2ed573' : sec.net_flow < 0 ? '#ff4757' : '#888'
 
     html += `<div class="card" style="border-left:3px solid ${heatCls};padding:10px 14px">
