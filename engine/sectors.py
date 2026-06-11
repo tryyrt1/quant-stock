@@ -443,7 +443,8 @@ def fetch_hot_boards(fetch_kline_func, top_n=30, max_stocks=15):
         })
 
     sector_prelim.sort(key=lambda x: -x["prelim_heat"])
-    candidates = sector_prelim[:top_n * 2]
+    # Step 2 候选：取全部板块，确保有足够的数量到 30
+    candidates = sector_prelim[:min(len(sector_prelim), max(60, top_n * 2))]
 
     # ── Step 2: 精筛 — 拉 K 线做形态识别 ──
     klines_all = {}
