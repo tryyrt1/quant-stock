@@ -698,7 +698,6 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
             "volume": {"score": vol_score, "reasons": vol_reasons, "weight": weights["volume"]},
             "sector": {"score": sector_score, "reasons": sector_reasons, "weight": weights["sector"]},
             "intraday": {"score": intraday_score, "reasons": intraday_reasons, "weight": weights["intraday"]},
-            "capital": {"score": capital_score, "reasons": capital_reasons, "weight": weights["capital"]},
         },
         "method_signals": method_signals,
         "reasons": all_reasons[:10] + intraday_reasons[:3],

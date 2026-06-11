@@ -25,7 +25,7 @@ def _prepare_training_data():
             continue
         # 特征：7维度评分 + 综合score + 信号 + 原始指标
         features = []
-        for dim in ['trend', 'patterns', 'price_level', 'volume', 'sector', 'intraday', 'capital']:
+        for dim in ['trend', 'patterns', 'price_level', 'volume', 'sector', 'intraday']:
             m = methods.get(dim, {})
             features.append(m.get('score', 50))
         features.append(r.get('score', 50))
@@ -87,7 +87,7 @@ def score(features_dict, raw_fields=None):
     with open(MODEL_FILE, 'rb') as f:
         model = pickle.load(f)
 
-    dims = ['trend', 'patterns', 'price_level', 'volume', 'sector', 'intraday', 'capital']
+    dims = ['trend', 'patterns', 'price_level', 'volume', 'sector', 'intraday']
     features = [features_dict.get(d, 50) for d in dims]
     features.append(features_dict.get('total_score', 50))
     sig_map = {'买入':5, '增持':4, '持有':3, '减仓':2, '卖出':1}
