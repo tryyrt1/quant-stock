@@ -525,7 +525,23 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
                     stock_flow_cache[key] = net
                     return net
         except Exception as e:
-            print(f'[sectors] 资金流获取失败 {code}: {e}')
+            print(f'[sectors] 资金流API失败 {code}: {e}')
+
+        # API不可用 → OBV推算估算净流
+        try:
+            k = fetch_kline_func(market + code, 30)
+            if k and len(k) >= 10:
+                closes = [x['close'] for x in k]
+                vols = [x['volume'] for x in k]
+                avg_price = sum(closes[-10:]) / 10
+                up_vol = sum(vols[i] for i in range(-10, 0) if closes[i] > closes[i-1])
+                down_vol = sum(vols[i] for i in range(-10, 0) if closes[i] < closes[i-1])
+                net_est = (up_vol - down_vol) * avg_price  # 估算净流(元)
+                stock_flow_cache[key] = net_est
+                return net_est
+        except Exception as e:
+            print(f'[sectors] OBV推算失败 {code}: {e}')
+
         stock_flow_cache[key] = 0
         return 0
 
@@ -539,11 +555,14 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
     all_sector_flows = []
     for name, stocks in CONCEPT_MAP.items():
         total_net = 0
+        valid_count = 0
         for code, market, cname in stocks:
             net = stock_flow_cache.get(f"{market}_{code}", 0)
             total_net += net
+            if net != 0:
+                valid_count += 1
         net_flow_wan = round(total_net / 1e4, 0)
-        all_sector_flows.append({"name": name, "net_flow": net_flow_wan})
+        all_sector_flows.append({"name": name, "net_flow": net_flow_wan, "flow_stock_count": valid_count})
 
     # 资金流入排名（全板块排序，记录每个板块的排位）
     flow_ranked = sorted(all_sector_flows, key=lambda x: -x["net_flow"])

@@ -1290,6 +1290,7 @@ function renderHotSectors(sectors) {
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           ${flowStr ? `<span style="font-size:11px;color:${flowCls};font-weight:600">💰${flowStr}</span>` : ''}
+          ${sec.flow_stock_count != null ? `<span style="font-size:9px;color:#666;margin-left:4px">${sec.flow_stock_count}只</span>` : ''}
           <span style="font-size:11px;color:${heatCls};font-weight:600">${sec.heat_signal || sec.heat}</span>
           <span class="${chgCls}" style="font-size:12px;font-weight:600">${chgStr}</span>
         </div>
