@@ -2623,7 +2623,7 @@ async function loadHeatHistory() {
     '<tr style="color:#888;border-bottom:1px solid rgba(255,255,255,.06)">' +
     '<th style="padding:8px 6px;text-align:left">#</th>' +
     '<th style="padding:8px 6px;text-align:left">板块</th>' +
-    '<th style="padding:8px 6px;text-align:center">近5日上榜次数</th></tr>'
+    '<th style="padding:8px 6px;text-align:center">近5日进前30次数</th></tr>'
   data.forEach((item, i) => {
     const pct = Math.round(item.count / 5 * 100)
     const c = item.count >= 4 ? '#ff4757' : item.count >= 2 ? '#ffa502' : '#888'
@@ -2635,7 +2635,7 @@ async function loadHeatHistory() {
       '<div style="width:' + pct + '%;height:100%;background:' + c + ';border-radius:2px"></div></div></td></tr>'
   })
   html += '</table>' +
-    '<div style="font-size:10px;color:#555;text-align:center;margin-top:8px">统计范围：最近5个交易日15:10扫描结果</div>'
+    '<div style="font-size:10px;color:#555;text-align:center;margin-top:8px">统计范围：最近5个交易日（每次扫描记录前30）</div>'
   el.innerHTML = html
 }
 

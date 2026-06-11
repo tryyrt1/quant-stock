@@ -1443,7 +1443,7 @@ def sector_heat_history_api():
         for day in recent:
             for name in day.get("top10", []):
                 counts[name] = counts.get(name, 0) + 1
-        ranked = sorted(counts.items(), key=lambda x: -x[1])[:15]
+        ranked = sorted(counts.items(), key=lambda x: -x[1])[:30]
         return jsonify([{"name": n, "count": c} for n, c in ranked])
     except:
         return jsonify([])
@@ -3161,7 +3161,7 @@ def _run_scheduled_scans():
             try:
                 secs = result.get("sectors", [])
                 secs.sort(key=lambda x: -x.get("heat", 0))
-                top10 = [s["name"] for s in secs[:10]]
+                top10 = [s["name"] for s in secs[:30]]
                 heat_file = os.path.join(DATA_DIR, 'snapshots', 'sector_heat.json')
                 history = json.load(open(heat_file)) if os.path.exists(heat_file) else []
                 today = time.strftime('%Y-%m-%d')
