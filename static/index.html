@@ -1271,8 +1271,9 @@ function renderHotSectors(sectors) {
   }
   let html = ''
   sectors.forEach((sec, idx) => {
-    const heatCls = sec.heat >= 70 ? '#ff4757' : sec.heat >= 55 ? '#ffa502' : sec.heat >= 40 ? '#00d2ff' : '#888'
-    const chgCls = sec.change_pct >= 0 ? 'up' : 'down'
+    const heatVal = sec.heat || 0
+    const heatCls = heatVal >= 70 ? '#ff4757' : heatVal >= 55 ? '#ffa502' : heatVal >= 40 ? '#00d2ff' : '#888'
+    const chgCls = (sec.change_pct||0) >= 0 ? 'up' : 'down'
     const chgStr = sec.change_pct ? `${sec.change_pct >= 0 ? '+' : ''}${sec.change_pct}%` : ''
     const rankLabels = []
     if (sec.flow_rank) rankLabels.push(`💰估算资金第${sec.flow_rank}名`)
@@ -1295,12 +1296,10 @@ function renderHotSectors(sectors) {
           <span class="${chgCls}" style="font-size:12px;font-weight:600">${chgStr}</span>
         </div>
       </div>
-      <div style="margin:4px 0;height:4px;background:rgba(255,255,255,.06);border-radius:2px">
-        <div style="width:${Math.min(100,sec.heat)}%;height:100%;background:${heatCls};border-radius:2px"></div>
-      </div>
+      ${sec.heat != null ? '<div style="margin:4px 0;height:4px;background:rgba(255,255,255,.06);border-radius:2px"><div style="width:' + Math.min(100,sec.heat) + '%;height:100%;background:' + heatCls + ';border-radius:2px"></div></div>' : ''}
       <div style="display:flex;justify-content:space-between;font-size:10px;color:#888">
-        <span>上涨 ${sec.up_count}/${sec.stock_count} | 形态 ${sec.pattern_count}</span>
-        ${sec.prediction ? `<span style="color:#aaa;flex:1;text-align:right;margin-left:8px">${sec.prediction}</span>` : ''}
+        ${sec.stock_count != null ? '<span>上涨 ' + (sec.up_count||0) + '/' + sec.stock_count + ' | 形态 ' + (sec.pattern_count||0) + '</span>' : '<span>成分股 ' + (sec.flow_stock_count||0) + '只有资金数据</span>'}
+        ${sec.prediction ? '<span style="color:#aaa;flex:1;text-align:right;margin-left:8px">' + sec.prediction + '</span>' : ''}
       </div>
       ${sec.news_signal ? `<div style="font-size:10px;color:#ffa502;margin-top:2px">📰 ${sec.news_signal}</div>` : ''}
     </div>`

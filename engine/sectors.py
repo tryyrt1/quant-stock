@@ -582,8 +582,6 @@ def fetch_hot_boards(fetch_kline_func, top_n=8, max_stocks=15):
             "net_flow": item["net_flow"],
             "flow_rank": flow_rank_map.get(item["name"]),
             "flow_stock_count": item.get("flow_stock_count", 0),
-            "stock_count": 0, "up_count": 0, "down_count": 0,
-            "pattern_count": 0, "heat": 0,
         }
         if sd:
             for k, v in sd.items():
