@@ -1432,9 +1432,22 @@ def sectors_scan_api():
 
 @app.route('/api/sectors/hot', methods=['POST'])
 def sectors_hot_api():
-    """全市场异动板块 Top N"""
+    """全市场异动板块 Top N（从调度缓存读取）"""
     data = request.json or {}
-    top_n = data.get("top_n", 8)
+    top_n = data.get("top_n", 30)
+    snap_path = os.path.join(DATA_DIR, 'snapshots', 'sectors.json')
+    if os.path.exists(snap_path):
+        try:
+            result = json.load(open(snap_path, encoding='utf-8'))
+            sectors = result.get("sectors", [])
+            sectors.sort(key=lambda x: -x.get("heat", 0))
+            result["sectors"] = sectors[:top_n]
+            for i, s in enumerate(result["sectors"]):
+                s["heat_rank"] = i + 1
+            return jsonify(result)
+        except Exception as e:
+            print(f'[sectors_hot] 缓存读取失败: {e}')
+    # 缓存不可用时回退实时扫描
     result = fetch_hot_boards(fetch_kline, top_n=top_n)
     return jsonify(result)
 
