@@ -501,6 +501,7 @@ def fetch_hot_boards(fetch_kline_func, top_n=30, max_stocks=15):
         final_sectors.append(sd)
 
     return {
+        "sectors": final_sectors,
         "total_sectors": len(final_sectors),
         "total_stocks": sum(sd.get("stock_count", 0) for sd in final_sectors if sd.get("stock_count")),
         "total_patterns": sum(sd.get("pattern_count", 0) for sd in final_sectors),
