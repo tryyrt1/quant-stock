@@ -1253,7 +1253,7 @@ let selectedSectors = []
 async function loadHotSectors() {
   const el = document.getElementById('hotSectorsResult')
   if (!el) return
-  const data = await apiPost('/api/sectors/hot', {top_n: 8})
+  const data = await apiPost('/api/sectors/hot', {top_n: 30})
   if (data && data.sectors && data.sectors.length > 0) {
     renderHotSectors(data.sectors)
     document.getElementById('hotSectorsInfo').textContent =

@@ -494,7 +494,6 @@ def fetch_hot_boards(fetch_kline_func, top_n=30, max_stocks=15):
 
     sectors_list = sorted(sectors_data.values(), key=lambda x: -x["heat"])[:top_n]
 
-    sectors_list = sorted(sectors_data.values(), key=lambda x: -x["heat"])[:top_n]
 
     final_sectors = []
     for i, sd in enumerate(sectors_list):
