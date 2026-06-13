@@ -3,7 +3,7 @@ from .indicators import calc_ma, calc_rsi, calc_macd, check_golden_cross, check_
 
 
 def assess_trend(closes):
-    """趋势评分 (0-100), 权重30%"""
+    """趋势评分 (0-100), 权重30% + SEPA趋势模板"""
     if len(closes) < 60:
         return 50, ["数据不足"]
 
@@ -28,7 +28,41 @@ def assess_trend(closes):
                 reasons.append("MA5上穿MA20(金叉)")
             elif ma5_list[-2] >= ma20_list[-2] and ma5_list[-1] < ma20_list[-1]:
                 score -= 15
-                reasons.append("MA5下穿MA20(死叉)")
+
+    # ———— SEPA 趋势模板 ————
+    n = len(closes)
+    ma50  = calc_ma(closes, 50)[-1]  if n >= 50 else None
+    ma150 = calc_ma(closes, 150)[-1] if n >= 150 else None
+    ma200 = calc_ma(closes, 200)[-1] if n >= 200 else None
+
+    if ma50 and ma150 and ma200:
+        # 满配: price > MA50 > MA150 > MA200 多头排列
+        if price > ma50 > ma150 > ma200:
+            score += 18
+            reasons.append(f"SEPA趋势模板满足(价>{ma50:.2f}>{ma150:.2f}>{ma200:.2f})")
+        elif price > ma50 and ma50 > ma200:
+            score += 8
+            reasons.append(f"SEPA部分满足(价>MA50>MA200)")
+        elif price < ma50 and ma50 < ma200:
+            score -= 10
+            reasons.append(f"SEPA空头排列(价<MA50<MA200)")
+    elif ma50 and ma150:
+        # 只有150天数据
+        if price > ma50 > ma150:
+            score += 12
+            reasons.append(f"SEPA简化满足(价>MA50>MA150)")
+        elif price < ma50 < ma150:
+            score -= 8
+            reasons.append(f"SEPA简化空头(价<MA50<MA150)")
+    elif ma50:
+        # 只有50天数据
+        if price > ma50:
+            score += 5
+            reasons.append(f"站上MA50 ({price:.2f}>{ma50:.2f})")
+        else:
+            score -= 5
+            reasons.append(f"跌破MA50 ({price:.2f}<{ma50:.2f})")
+    # ———— SEPA 趋势模板 结束 ————
 
     # 价格在MA20上方还是下方
     if pct_ma20 > 0:
@@ -77,7 +111,7 @@ def assess_patterns(patterns):
     bullish_keys = {"golden_cross", "obv_breakout", "obv_consecutive",
                     "obv_bullish", "consecutive_up", "one_limitup",
                     "pre_breakout", "long_shadow", "low_vol_surge",
-                    "biasvol_buy", "vp_confirm"}
+                    "biasvol_buy", "vp_confirm", "pivot_breakout"}
     bearish_keys = {"oversold", "vp_divergence"}  # vp_divergence=量价背离,风险信号
 
     for p in patterns:

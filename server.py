@@ -1,10 +1,9 @@
 """AI 量化选股系统 - 主服务器 (单文件版)"""
 import json, os, socket, sys, re, time, threading, shutil, subprocess
-from datetime import datetime
-from flask import Flask, jsonify, request, Response, send_from_directory
+from datetime import datetime, timedelta
 
 import hashlib
-from flask import session, redirect, url_for
+from flask import Flask, session, redirect, url_for, jsonify, request, Response, send_from_directory
 from functools import wraps
 
 APP_PASSWORD = os.environ.get('APP_PASSWORD', 'changeme')
@@ -381,17 +380,46 @@ def fetch_tencent_quote(codes_str):
         })
     return {r['code']: r for r in results}
 
-def fetch_kline(code_str, days=120, period='day'):
-    """获取K线数据, period: 'day' 或 'week'"""
-    url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code_str},{period},,,{days},qfq'
+def fetch_kline(code_str, days=250, period='day'):
+    """获取K线数据 — 腾讯ifzq优先，baostock备用"""
+    url = f'https://ifzq.gtimg.cn/appstock/app/fqkline/get?param={code_str},{period},,,{days},qfq'
     import requests
-    r = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
-    raw = r.json()
-    data = raw.get('data', {})
-    wk_key = f'qfq{period}'
-    klines = data.get(code_str, {}).get(wk_key) or data.get(code_str, {}).get(period) or []
-    return [{'date': k[0], 'open': _f(k[1]), 'close': _f(k[2]),
-             'high': _f(k[3]), 'low': _f(k[4]), 'volume': _int(k[5])} for k in klines]
+    try:
+        r = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        if r.status_code == 200:
+            raw = r.json()
+            data = raw.get('data', {})
+            wk_key = f'qfq{period}'
+            klines = data.get(code_str, {}).get(wk_key) or data.get(code_str, {}).get(period) or []
+            if klines:
+                return [{'date': k[0], 'open': _f(k[1]), 'close': _f(k[2]),
+                         'high': _f(k[3]), 'low': _f(k[4]), 'volume': _int(k[5])} for k in klines]
+    except:
+        pass
+    # baostock备用
+    import baostock as bs
+    try:
+        bs_code = code_str
+        if '.' not in bs_code and len(bs_code) >= 2:
+            bs_code = bs_code[:2] + '.' + bs_code[2:]
+        lg = bs.login()
+        if lg.error_code != '0': return []
+        end = datetime.now().strftime('%Y-%m-%d')
+        start = (datetime.now() - timedelta(days=days+30)).strftime('%Y-%m-%d')
+        freq = 'w' if period == 'week' else 'd'
+        rs = bs.query_history_k_data_plus(bs_code, 'date,open,close,high,low,volume',
+                                          start_date=start, end_date=end, frequency=freq, adjustflag='3')
+        rows = []
+        while (rs.error_code == '0') and rs.next():
+            rows.append(rs.get_row_data())
+        bs.logout()
+        if rows:
+            return [{'date': r[0], 'open': _f(r[1]), 'close': _f(r[2]),
+                     'high': _f(r[3]), 'low': _f(r[4]), 'volume': _int(r[5])} for r in rows]
+    except:
+        try: bs.logout()
+        except: pass
+    return []
 
 def _f(v):
     try: return float(v)
@@ -1447,6 +1475,10 @@ def sector_heat_history_api():
         return jsonify([{"name": n, "count": c} for n, c in ranked])
     except:
         return jsonify([])
+
+
+
+
 
 
 @app.route('/api/sectors/hot', methods=['POST'])
@@ -3105,6 +3137,34 @@ def _run_scheduled_scans():
     # 非交易日跳过（周末+节假日）
     if not is_trading_day(now):
         return
+
+    hm = (now.tm_hour, now.tm_min)
+
+    # 0. 盘前筛选（周末00:05，缓存5天有效）
+    if hm == (0, 5):
+        try:
+            cache_path = os.path.join(SNAPSHOT_DIR, "intraday_candidates.json")
+            age = 999
+            if os.path.exists(cache_path):
+                age = (time.time() - os.path.getmtime(cache_path)) / 86400
+            if age >= 5 and now.tm_wday in (5, 6):
+                print(f'[scheduler] 盘前筛选: 缓存{age:.0f}天 周末刷新')
+                stocks = fetch_a_share_list()
+            if stocks:
+                enriched = []
+                batch = stocks[:1000]
+                chunk_size = 100
+                for i in range(0, len(batch), chunk_size):
+                    chunk = batch[i:i+chunk_size]
+                    cs = ','.join([s['market'] + s['code'] for s in chunk])
+                    quotes = fetch_tencent_quote(cs) or {}
+                    for s in chunk:
+                        q = quotes.get(s['code'], {})
+                        enriched.append({**s, 'price': q.get('price', 0), 'pe': q.get('pe', 0), 'pb': q.get('pb', 0)})
+                threading.Thread(target=prefilter_candidates, args=(enriched,), daemon=True).start()
+        except Exception as e:
+            print(f'[scheduler] 盘前筛选失败: {e}')
+        return  # 00:05只做筛选，不做其他扫描
 
     is_record = is_record_time(now.tm_hour, now.tm_min)
     is_verify = (now.tm_hour, now.tm_min) == (15, 10)

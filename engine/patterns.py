@@ -702,6 +702,57 @@ def pattern_vp_divergence(klines, period=20, max_corr=-0.3):
 
 
 
+def pattern_pivot_breakout(klines, lookback=20, vol_factor=1.5):
+    """SEPA Pivot突破: 价格突破前N日最高点 + 成交量确认"""
+    if len(klines) < lookback + 5:
+        return False, {}
+    closes = [k['close'] for k in klines]
+    highs = [k['high'] for k in klines]
+    vols = [k['volume'] for k in klines]
+    price = closes[-1]
+    # 前N日最高价（不含今日）
+    peak = max(highs[-(lookback+1):-1])
+    # 对比最近3日是否有突破
+    recent_highs = max(highs[-4:-1]) if len(highs) >= 4 else peak
+    if price < peak or recent_highs < peak:
+        return False, {}
+    # 成交量确认: 今日量 > N日均量的vol_factor倍
+    avg_vol = sum(vols[-(lookback+1):-1]) / lookback
+    vol_ratio = vols[-1] / avg_vol if avg_vol > 0 else 1.0
+    vol_ok = vol_ratio >= vol_factor
+    # 突破幅度
+    pct_break = (price - peak) / peak * 100
+    # 前10天振幅收窄程度 (VCP特征)
+    if len(klines) >= 15:
+        ranges = [(k['high'] - k['low']) / k['close'] * 100 for k in klines[-15:-1]]
+        avg_range = sum(ranges) / len(ranges)
+        last_range = (klines[-1]['high'] - klines[-1]['low']) / price * 100
+        narrow = last_range < avg_range * 0.7
+    else:
+        narrow = False
+    score = 0
+    details = []
+    if vol_ok:
+        score += 2
+        details.append(f"量{vol_ratio:.1f}倍")
+    if narrow:
+        score += 1
+        details.append("振幅收窄")
+    if pct_break < 3:
+        score += 1
+        details.append("突破温和")
+    return True, {
+        'peak': round(peak, 2),
+        'break_pct': round(pct_break, 2),
+        'vol_ratio': round(vol_ratio, 1),
+        'vol_confirm': vol_ok,
+        'narrow': narrow,
+        'score': score,
+        'lookback': lookback,
+        'label': f'Pivot突破前高{peak:.2f}(+{pct_break:.1f}%)' + ('放量' if vol_ok else '')
+    }
+
+
 def pattern_vp_increase_flat(klines, lookback=120):
     """量增价平"""
     if not klines or len(klines) < lookback:
@@ -838,6 +889,7 @@ ALL_PATTERNS = [
     ('one_limitup', '首板涨停', pattern_one_limitup),
     # ('pre_breakout', '潜在翻倍', pattern_pre_breakout),  # 已移除
     ('biasvol_buy', 'BIASVOL放量超卖', pattern_biasvol_buy),
+    ('pivot_breakout', 'SEPA Pivot突破', pattern_pivot_breakout),
     ('vp_increase_flat', '量增价平', pattern_vp_increase_flat),
     ('vp_increase_up', '量增价升', pattern_vp_increase_up),
     ('vp_decrease_up', '量减价升', pattern_vp_decrease_up),

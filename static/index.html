@@ -236,15 +236,15 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 	      </div>
 	    </div>
 	    <div id="sectorResults"></div>
+    <!-- 板块热度卡（合并到板块追踪页内） -->
+    <div id="heatHistoryContainer">
+      <div class="card">
+        <div class="card-title">📊 板块热度追踪 <span style="font-size:11px;color:#888;font-weight:400">近5日进入热度前10次数</span></div>
+        <div id="heatHistoryResult"><div style="text-align:center;padding:12px"><span class="spinner"></span>加载中...</div></div>
+      </div>
+    </div>
   </div>
 
-  <!-- ===== 板块热度页 ===== -->
-<div id="page-heathistory" class="hide">
-  <div class="card">
-    <div class="card-title">📊 板块热度追踪 <span style="font-size:11px;color:#888;font-weight:400">近5日进入热度前10次数</span></div>
-    <div id="heatHistoryResult"><div class="loading" style="text-align:center;padding:20px"><span class="spinner"></span>加载中...</div></div>
-  </div>
-</div>
 
 <!-- ===== 每日一股 ===== -->
   <div id="page-dailypick" class="hide">
@@ -278,8 +278,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
   <div class="tab" data-tab="dailypick" onclick="switchTab('dailypick');loadDailyPick()"><span class="tab-icon">⭐</span>每日一股</div>
   <div class="tab" data-tab="patterns" onclick="switchTab('patterns');loadSnapshots()"><span class="tab-icon">🎯</span>选股模式</div>
-  <div class="tab" data-tab="sectors" onclick="switchTab('sectors');loadSectorList();loadHotSectors();loadSnapshots()"><span class="tab-icon">🧩</span>板块追踪</div>
-  <div class="tab" data-tab="heathistory" onclick="switchTab('heathistory');loadHeatHistory()"><span class="tab-icon">📊</span>板块热度</div>
+  <div class="tab" data-tab="sectors" onclick="switchTab('sectors');loadSectorList();loadHotSectors();loadHeatHistory();loadSnapshots()"><span class="tab-icon">🧩</span>板块追踪</div>
 	  <div class="tab" data-tab="predictions" onclick="switchTab('predictions');loadPredictions()"><span class="tab-icon">📈</span>预测统计</div>
 </div>
 
@@ -1420,7 +1419,6 @@ function switchTab(tab) {
   document.getElementById('page-dailypick').classList.toggle('hide',tab!=='dailypick')
   document.getElementById('page-patterns').classList.toggle('hide',tab!=='patterns')
   document.getElementById('page-sectors').classList.toggle('hide',tab!=='sectors')
-  document.getElementById('page-heathistory').classList.toggle('hide',tab!=='heathistory')
   document.getElementById('page-predictions').classList.toggle('hide',tab!=='predictions')
 }
 function showHome() { switchTab('home') }
