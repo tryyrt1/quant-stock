@@ -28,6 +28,53 @@ try:
     bs.logout()
 except: pass
 
+# 基本面数据加载器（懒加载，文件不存在时静默降级）
+_FUNDAMENTALS_LOADER = None
+def _get_fundamentals_loader():
+    global _FUNDAMENTALS_LOADER
+    if _FUNDAMENTALS_LOADER is None:
+        from engine.fundamentals_loader import get_loader
+        _FUNDAMENTALS_LOADER = get_loader()
+        if _FUNDAMENTALS_LOADER.is_available():
+            print(f"  [基本面] 已加载 {_FUNDAMENTALS_LOADER.total_stocks()} 只股票财务数据")
+    return _FUNDAMENTALS_LOADER
+
+def _get_fundamentals(code):
+    """安全获取一只股票的基本面数据，没有则返回 None。"""
+    try:
+        fl = _get_fundamentals_loader()
+        return fl.get(code) if fl and fl.is_available() else None
+    except:
+        return None
+
+# ─── Tushare daily_basic 缓存 ─────────────────────
+_TUSHARE_MARKET_CACHE = {'data': None, 'time': 0}
+def _load_tushare_market_data():
+    """启动时加载全市场PE/PB/市值数据（Tushare daily_basic），一次调用。"""
+    global _TUSHARE_MARKET_CACHE
+    if not os.environ.get('TUSHARE_TOKEN'):
+        return {}
+    try:
+        from engine.tushare_provider import get_provider
+        tp = get_provider()
+        if not tp.available:
+            return {}
+        qb = tp.get_quote_batch()
+        _TUSHARE_MARKET_CACHE = {'data': qb, 'time': time.time()}
+        print(f"  [Tushare] 已加载全市场行情数据 ({len(qb)} 只)")
+        return qb
+    except Exception as e:
+        print(f"  [Tushare] 全市场行情加载失败: {e}")
+        return {}
+
+def _get_market_data(code):
+    """从 Tushare 缓存获取股票行情数据（PE/PB/市值）。"""
+    cache = _TUSHARE_MARKET_CACHE
+    if cache['data'] is None:
+        _load_tushare_market_data()
+        cache = _TUSHARE_MARKET_CACHE
+    return (cache['data'] or {}).get(code)
+
 AKSHARE_AVAILABLE = False
 try:
     import akshare as ak
@@ -344,6 +391,21 @@ if not os.path.exists(WATCHLIST_FILE):
     with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
         json.dump([], f)
 
+# 启动时预加载基本面数据（如有）
+_get_fundamentals_loader()
+
+# 启动时预加载 Tushare 全市场行情数据（如已配置 Token）
+_load_tushare_market_data()
+
+# 启动盘中监控引擎（候选池）
+try:
+    from engine.intraday_monitor import get_monitor, start_monitor_loop
+    m = get_monitor()
+    if m.get_candidate_count() > 0:
+        start_monitor_loop(interval=300)  # 每5分钟
+except Exception as e:
+    print(f"  [Monitor] 启动失败: {e}")
+
 # =================== 工具函数 ===================
 
 def load_watchlist():
@@ -594,7 +656,8 @@ def stock_detail(code):
     sr = calc_support_resistance(kline) if len(kline) >= 20 else {}
 
     # 因子分析
-    factors = analyze_factors(kline, quote, sentiment_score, sr) if len(kline) >= 60 else {'score': 50, 'advice': '数据不足'}
+    fund_data = _get_fundamentals(code)
+    factors = analyze_factors(kline, quote, sentiment_score, sr, fundamentals=fund_data) if len(kline) >= 60 else {'score': 50, 'advice': '数据不足'}
 
     # 技术指标概要
     closes = [k['close'] for k in kline]
@@ -681,7 +744,10 @@ def stock_decision_api(code):
     # 板块上下文 (从最新板块快照获取)
     sector_ctx = _find_sector_context(code)
 
-    decision = make_decision(closes, kline, patterns, sr, sector_ctx, quote=quote, code=code, market=market)
+    # 基本面数据
+    fund_data = _get_fundamentals(code)
+
+    decision = make_decision(closes, kline, patterns, sr, sector_ctx, quote=quote, code=code, market=market, fundamentals=fund_data)
 
     # 附带当前价格和涨跌幅
     decision["price"] = quote.get("price", 0)
@@ -690,6 +756,37 @@ def stock_decision_api(code):
     decision["code"] = code
 
     return jsonify(decision)
+
+
+# ─── 盘中实时追踪 API ───
+
+@app.route('/api/intraday/candidates')
+def intraday_candidates():
+    """返回候选池列表"""
+    try:
+        from engine.intraday_monitor import get_monitor
+        m = get_monitor()
+        return jsonify({
+            'count': m.get_candidate_count(),
+            'candidates': m.get_candidates(),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'count': 0, 'candidates': []})
+
+
+@app.route('/api/intraday/monitor')
+def intraday_monitor():
+    """返回当前异动列表和监控状态"""
+    try:
+        from engine.intraday_monitor import get_monitor
+        m = get_monitor()
+        return jsonify({
+            'alerts': m.get_alerts(),
+            'history': m.get_history(),
+            'status': m.get_status(),
+        })
+    except Exception as e:
+        return jsonify({'alerts': [], 'history': [], 'status': {'error': str(e)}})
 
 
 # ─── 预测回测 API ───
@@ -1603,8 +1700,9 @@ def scan_watchlist_deep():
             pats = scan_patterns({full_code: kline}) if len(kline) >= 20 else {}
             patterns = pats.get(full_code, [])
             sector_ctx = _find_sector_context(code)
+            fund_data = _get_fundamentals(code)
             decision = make_decision(closes, kline, patterns, sr, sector_ctx,
-                                     quote=quote, code=code, market=market)
+                                     quote=quote, code=code, market=market, fundamentals=fund_data)
 
             # 风险指标（7方法体系下，5+方法分歧才算严重）
             methods = decision.get('method_signals', {})
@@ -2618,7 +2716,8 @@ def predict_intraday(watchlist, quotes):
             sr = calc_support_resistance(k)
             pats = scan_patterns({market + code: k})
             patterns = pats.get(market + code, [])
-            decision = make_decision(closes, k, patterns, sr, None, q, code=code, market=market)
+            fund_data = _get_fundamentals(code)
+            decision = make_decision(closes, k, patterns, sr, None, q, code=code, market=market, fundamentals=fund_data)
 
             sig = decision.get('signal', '持有')
             sc = decision.get('score', 50)
@@ -2875,8 +2974,9 @@ def compute_daily_pick(period='morning'):
                         is_green = k[-1]['close'] > k[-1]['open']
                 except: pass
                 q = quotes.get(code, {}) if isinstance(quotes, dict) else {}
+                fund_data = _get_fundamentals(code)
                 decision = make_decision(closes, k, patterns, sr, sector_ctx,
-                                         quote=q, code=code, market=s['market'])
+                                         quote=q, code=code, market=s['market'], fundamentals=fund_data)
                 # 筛选：排除涨停
                 if cur_chg < 9.0:
                     agree = sum(1 for d in decision.get('details', {}).values()
@@ -2942,7 +3042,7 @@ def compute_daily_pick(period='morning'):
                         'details': decision.get('details', {}),
                         'reasons': decision.get('reasons', []),
                         'patterns_found': pattern_names,
-                        'method_agree': agree, 'total_methods': 6,
+                        'method_agree': agree, 'total_methods': 7,
                         'sr': sr,
                         'vp_label': _vp_label,
                         'range_pos': round(range_pos, 1),
@@ -3290,7 +3390,8 @@ def _run_scheduled_scans():
                 sr = calc_support_resistance(s['kline']) if len(s['kline']) >= 20 else {}
                 pats = scan_patterns({market+code: s['kline']}) if len(s['kline']) >= 20 else {}
                 patterns = pats.get(market+code, [])
-                decision = make_decision(closes, s['kline'], patterns, sr, sector_ctx, quote, code=code, market=market)
+                fund_data = _get_fundamentals(code)
+                decision = make_decision(closes, s['kline'], patterns, sr, sector_ctx, quote, code=code, market=market, fundamentals=fund_data)
                 record_prediction(code, market, s['name'],
                                  decision['signal'], decision['score'], price,
                                  methods=decision.get('method_signals', {}))

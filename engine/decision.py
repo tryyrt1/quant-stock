@@ -455,6 +455,181 @@ def assess_intraday(quote, closes, klines=None, hour=None, minute=None):
     return max(0, min(100, score)), reasons
 
 
+def assess_fundamentals(fundamentals):
+    """基本面评分 (0-100), 权重15%
+    fundamentals: 来自 fundamentals_loader.get(code) 的字典或 None
+    """
+    if not fundamentals:
+        return 50, ["暂无基本面数据"]
+
+    from engine.fundamentals_loader import get_loader
+    fl = get_loader()
+
+    score = 50
+    reasons = []
+
+    # ── 1. ROE 水平 (0-15分) ──
+    roe = fl.get_roe(fundamentals)
+    if roe is not None:
+        if roe > 0.25:
+            score += 12; reasons.append(f"高ROE({roe*100:.1f}%)")
+        elif roe > 0.15:
+            score += 8; reasons.append(f"良好ROE({roe*100:.1f}%)")
+        elif roe > 0.08:
+            score += 4; reasons.append(f"中等ROE({roe*100:.1f}%)")
+        elif roe > 0:
+            score -= 4; reasons.append(f"低ROE({roe*100:.1f}%)")
+        else:
+            score -= 12; reasons.append(f"ROE为负({roe*100:.1f}%)")
+    else:
+        reasons.append("ROE无数据")
+
+    # ── 2. 毛利率 & 净利率 (0-10分) ──
+    gp = fl.get_gp_margin(fundamentals)
+    np = fl.get_np_margin(fundamentals)
+    margin_added = False
+    if gp is not None:
+        if gp > 0.60:
+            score += 6; reasons.append(f"高毛利({gp*100:.0f}%)"); margin_added = True
+        elif gp > 0.30:
+            score += 3; reasons.append(f"毛利尚可({gp*100:.0f}%)"); margin_added = True
+        elif gp < 0:
+            score -= 6; reasons.append("毛利率为负"); margin_added = True
+    if np is not None:
+        if np > 0.15:
+            score += 4; reasons.append(f"高净利率({np*100:.1f}%)"); margin_added = True
+        elif np > 0.05:
+            score += 2; margin_added = True
+        elif np < 0:
+            score -= 4; reasons.append("净利润为负"); margin_added = True
+    if not margin_added:
+        reasons.append("利润率无数据")
+
+    # ── 3. ROE 趋势 (0-10分) ──
+    roe_hist = fl.get_roe_history(fundamentals, years=3)
+    if len(roe_hist) >= 2:
+        if roe_hist[0] > roe_hist[-1] * 1.05:
+            score += 8; reasons.append("ROE趋势向上")
+        elif roe_hist[0] < roe_hist[-1] * 0.95:
+            score -= 6; reasons.append("ROE趋势下滑")
+        else:
+            score += 3; reasons.append("ROE基本稳定")
+    else:
+        reasons.append("ROE历史不足")
+
+    # ── 4. 负债率 (0-15分) ──
+    liab = fl.get_liab_ratio(fundamentals)
+    if liab is not None:
+        if liab < 0.30:
+            score += 12; reasons.append(f"低负债({liab*100:.0f}%)")
+        elif liab < 0.50:
+            score += 6; reasons.append(f"负债适中({liab*100:.0f}%)")
+        elif liab < 0.65:
+            score += 0; reasons.append(f"负债偏高({liab*100:.0f}%)")
+        else:
+            score -= 8; reasons.append(f"高负债({liab*100:.0f}%)")
+    else:
+        reasons.append("负债率无数据")
+
+    # ── 5. 速动比率 + 利息保障倍数 (0-10分) ──
+    quick = fl.get_quick_ratio(fundamentals)
+    ebit = fl.get_ebit_to_interest(fundamentals)
+    debt_safety = False
+    if quick is not None:
+        if quick > 1.5:
+            score += 4; reasons.append(f"速动比率{quick:.2f}"); debt_safety = True
+        elif quick > 1.0:
+            score += 2; debt_safety = True
+        elif quick < 0.5:
+            score -= 4; reasons.append(f"速动比率{quick:.2f}偏低"); debt_safety = True
+    if ebit is not None:
+        if ebit > 5:
+            score += 4; reasons.append(f"利息保障{ebit:.0f}倍"); debt_safety = True
+        elif ebit > 2:
+            score += 2; debt_safety = True
+        elif ebit < 0:
+            score -= 4; reasons.append("利息保障为负"); debt_safety = True
+    if not debt_safety:
+        reasons.append("偿债数据不足")
+
+    # ── 6. 现金流质量 (0-15分) ──
+    yr = fl.get_latest_year(fundamentals)
+    cfo_np = yr.get('cfo_to_np') if yr else None
+    cfo_or = yr.get('cfo_to_or') if yr else None
+    cf_scored = False
+    if cfo_np is not None:
+        if cfo_np > 1.2:
+            score += 10; reasons.append(f"现金流充裕(净利{cfo_np:.1f}倍)"); cf_scored = True
+        elif cfo_np > 0.7:
+            score += 5; reasons.append("现金流正常"); cf_scored = True
+        elif cfo_np > 0:
+            score -= 3; reasons.append("现金流偏弱"); cf_scored = True
+        else:
+            score -= 8; reasons.append("经营现金流为负"); cf_scored = True
+    if cfo_or is not None and not cf_scored:
+        if cfo_or > 0.15:
+            score += 3; cf_scored = True
+    if not cf_scored:
+        reasons.append("现金流数据不足")
+
+    # ── 7. 营收增长 (0-10分) ──
+    rev_g = fl.get_revenue_growth(fundamentals)
+    if rev_g is not None:
+        if rev_g > 0.20:
+            score += 8; reasons.append(f"营收高增({rev_g*100:.0f}%)")
+        elif rev_g > 0.10:
+            score += 5; reasons.append(f"营收稳增({rev_g*100:.0f}%)")
+        elif rev_g > 0:
+            score += 2; reasons.append(f"营收微增({rev_g*100:.0f}%)")
+        elif rev_g > -0.10:
+            score -= 3; reasons.append(f"营收略降({rev_g*100:.0f}%)")
+        else:
+            score -= 6; reasons.append(f"营收大幅下滑({rev_g*100:.0f}%)")
+    else:
+        reasons.append("营收增长无数据")
+
+    # ── 8. 利润增长 (0-10分) ──
+    profit_g = fl.get_profit_growth(fundamentals)
+    if profit_g is not None:
+        if profit_g > 0.30:
+            score += 8; reasons.append(f"利润高增({profit_g*100:.0f}%)")
+        elif profit_g > 0.10:
+            score += 4; reasons.append(f"利润正增({profit_g*100:.0f}%)")
+        elif profit_g > 0:
+            score += 1
+        elif profit_g > -0.15:
+            score -= 4; reasons.append(f"利润下滑({profit_g*100:.0f}%)")
+        else:
+            score -= 8; reasons.append(f"利润大降({profit_g*100:.0f}%)")
+    else:
+        reasons.append("利润增长无数据")
+
+    # ── 9. 扣非利润占比 (0-5分) ──
+    if yr:
+        profit_dedt = yr.get('profit_dedt')
+        net_profit = yr.get('net_profit')
+        if profit_dedt is not None and net_profit is not None and net_profit != 0:
+            dedt_ratio = abs(profit_dedt / net_profit)
+            if dedt_ratio > 0.85:
+                score += 4; reasons.append(f"扣非占净利{dedt_ratio*100:.0f}%,利润真实")
+            elif dedt_ratio > 0.60:
+                score += 1
+            elif dedt_ratio < 0.30:
+                score -= 3; reasons.append("利润依赖非经常性损益")
+    else:
+        reasons.append("扣非数据不足")
+
+    # ── ROE 多年度持续加分 (0-5分) ──
+    if len(roe_hist) >= 3:
+        pos_count = sum(1 for v in roe_hist if v > 0)
+        if pos_count == 3 and all(v > 0.08 for v in roe_hist):
+            score += 4; reasons.append("连续3年盈利且ROE>8%")
+        elif pos_count == 3:
+            score += 2; reasons.append("连续3年盈利")
+
+    return max(0, min(100, score)), reasons
+
+
 def score_to_signal(score):
     """将0-100分数映射为买卖信号"""
     if score >= 75: return "买入"
@@ -640,9 +815,10 @@ def _score_from_eastmoney(records):
     return score, reasons
 
 
-def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, code=None, market=None):
+def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, code=None, market=None, fundamentals=None):
     """综合决策 — 返回明确买卖信号
     quote: 可选，传入实时行情数据用于分时评分
+    fundamentals: 可选，传入基本面数据用于基本面评分
     """
     trend_score, trend_reasons = assess_trend(closes)
     pat_score, pat_reasons = assess_patterns(patterns)
@@ -650,14 +826,16 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
     vol_score, vol_reasons = assess_volume(closes, klines)
     sector_score, sector_reasons = assess_sector(sector_ctx)
     intraday_score, intraday_reasons = assess_intraday(quote, closes, klines)
+    fund_score, fund_reasons = assess_fundamentals(fundamentals)
 
     weights = {
-        "trend": 0.28,
-        "patterns": 0.20,
-        "price_level": 0.17,
-        "volume": 0.10,
-        "sector": 0.15,
+        "trend": 0.23,
+        "patterns": 0.17,
+        "price_level": 0.14,
+        "volume": 0.09,
+        "sector": 0.12,
         "intraday": 0.10,
+        "fundamentals": 0.15,
     }
 
     total = (
@@ -667,6 +845,7 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
         + vol_score * weights["volume"]
         + sector_score * weights["sector"]
         + intraday_score * weights["intraday"]
+        + fund_score * weights["fundamentals"]
     )
     total = round(max(0, min(100, total)), 1)
 
@@ -685,13 +864,14 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
         "volume": {"score": vol_score, "signal": score_to_signal(vol_score)},
         "sector": {"score": sector_score, "signal": score_to_signal(sector_score)},
         "intraday": {"score": intraday_score, "signal": score_to_signal(intraday_score)},
+        "fundamentals": {"score": fund_score, "signal": score_to_signal(fund_score)},
     }
 
     # 汇总理由 (每个维度取前2条)
     all_reasons = []
     seen = set()
     for r in (trend_reasons + pat_reasons + level_reasons + vol_reasons
-              + sector_reasons):
+              + sector_reasons + fund_reasons):
         if r not in seen:
             seen.add(r)
             all_reasons.append(r)
@@ -700,26 +880,26 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
     try:
         from engine.ml_scorer import score as ml_score, is_ready as ml_ready, get_raw_fields
         if ml_ready():
-            details_last = details_list[-1] if details_list else {}
             ml_f = {
-                'trend': details_last.get('score', 50),
-                'patterns': details.get('patterns', {}).get('score', 50),
-                'price_level': details.get('price_level', {}).get('score', 50),
-                'volume': details.get('volume', {}).get('score', 50),
-                'sector': details.get('sector', {}).get('score', 50),
-                'intraday': details.get('intraday', {}).get('score', 50),
-                'total_score': total_score,
+                'trend': trend_score,
+                'patterns': pat_score,
+                'price_level': level_score,
+                'volume': vol_score,
+                'sector': sector_score,
+                'intraday': intraday_score,
+                'fundamentals': fund_score,
+                'total_score': total,
                 'signal': signal,
             }
             raw_f = get_raw_fields(klines, quote) if klines is not None else None
             ml_s = ml_score(ml_f, raw_f)
             if ml_s is not None:
-                blended = int(ml_s * 0.7 + total_score * 0.3)
-                total_score = max(0, min(100, blended))
-                signal = score_to_signal(total_score)
+                blended = int(ml_s * 0.7 + total * 0.3)
+                total = max(0, min(100, blended))
+                signal = score_to_signal(total)
     except:
         pass
-    
+
     return {
         "signal": signal,
         "sub": sub,
@@ -732,7 +912,8 @@ def make_decision(closes, klines, patterns, sr, sector_ctx=None, quote=None, cod
             "volume": {"score": vol_score, "reasons": vol_reasons, "weight": weights["volume"]},
             "sector": {"score": sector_score, "reasons": sector_reasons, "weight": weights["sector"]},
             "intraday": {"score": intraday_score, "reasons": intraday_reasons, "weight": weights["intraday"]},
+            "fundamentals": {"score": fund_score, "reasons": fund_reasons, "weight": weights["fundamentals"]},
         },
         "method_signals": method_signals,
-        "reasons": all_reasons[:10] + intraday_reasons[:3],
+        "reasons": all_reasons[:25] + intraday_reasons[:3],
     }

@@ -3,20 +3,22 @@ import json, os, time
 
 WEIGHT_FILE = os.path.join(os.path.dirname(__file__), '..', 'data', 'dynamic_weights.json')
 
-# 基础权重（7维度）
+# 基础权重（8维度）
 BASE_WEIGHTS = {
-    'trend': 0.23,
-    'patterns': 0.17,
-    'price_level': 0.15,
-    'volume': 0.08,
-    'sector': 0.10,
-    'intraday': 0.10,
-    'capital': 0.17,
+    'trend': 0.20,
+    'patterns': 0.14,
+    'price_level': 0.12,
+    'volume': 0.07,
+    'sector': 0.09,
+    'intraday': 0.08,
+    'capital': 0.15,
+    'fundamentals': 0.15,
 }
 
 DIM_NAMES = {
     'trend': '趋势', 'patterns': '形态', 'price_level': '价位',
-    'volume': '量能', 'sector': '板块', 'intraday': '分时', 'capital': '资金',
+    'volume': '量能', 'sector': '板块', 'intraday': '分时',
+    'capital': '资金', 'fundamentals': '基本面',
 }
 
 

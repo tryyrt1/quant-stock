@@ -1,9 +1,160 @@
 """多因子分析引擎 - 评分模型"""
 
-def analyze_factors(kline_data, quote, news_sentiment=0, sr=None):
+
+def _score_quality_from_fundamentals(fundamentals):
+    """基于真实基本面数据打分 (0-100)，返回 (score, desc)。"""
+    from engine.fundamentals_loader import get_loader
+    fl = get_loader()
+
+    # ── ROE (权重35%) ──
+    roe = fl.get_roe(fundamentals)
+    if roe is None:
+        roe_score = 40
+        roe_desc = "ROE=无数据"
+    elif roe > 0.30:
+        roe_score = 95
+        roe_desc = f"ROE={roe*100:.1f}%"
+    elif roe > 0.20:
+        roe_score = 80
+        roe_desc = f"ROE={roe*100:.1f}%"
+    elif roe > 0.15:
+        roe_score = 70
+        roe_desc = f"ROE={roe*100:.1f}%"
+    elif roe > 0.10:
+        roe_score = 55
+        roe_desc = f"ROE={roe*100:.1f}%"
+    elif roe > 0.05:
+        roe_score = 35
+        roe_desc = f"ROE={roe*100:.1f}%"
+    elif roe > 0:
+        roe_score = 20
+        roe_desc = f"ROE={roe*100:.1f}%"
+    else:
+        roe_score = 5
+        roe_desc = f"ROE={roe*100:.1f}%(亏损)"
+
+    # ── 毛利率 & 净利率 (权重15%) ──
+    gp = fl.get_gp_margin(fundamentals)
+    np = fl.get_np_margin(fundamentals)
+    margin_score = 50
+    margin_parts = []
+    if gp is not None:
+        margin_parts.append(f"毛利率={gp*100:.1f}%")
+        if gp > 0.60:
+            margin_score += 25
+        elif gp > 0.40:
+            margin_score += 15
+        elif gp > 0.20:
+            margin_score += 5
+        elif gp < 0:
+            margin_score -= 15
+    if np is not None:
+        margin_parts.append(f"净利率={np*100:.1f}%")
+        if np > 0.20:
+            margin_score += 15
+        elif np > 0.10:
+            margin_score += 8
+        elif np > 0.05:
+            margin_score += 3
+        elif np < 0:
+            margin_score -= 10
+    margin_score = max(5, min(95, margin_score))
+
+    # ── 负债率 & 速动比率 (权重20%) ──
+    liab = fl.get_liab_ratio(fundamentals)
+    quick = fl.get_quick_ratio(fundamentals)
+    debt_score = 50
+    debt_parts = []
+    if liab is not None:
+        debt_parts.append(f"负债率={liab*100:.0f}%")
+        if liab < 0.30:
+            debt_score += 25
+        elif liab < 0.45:
+            debt_score += 15
+        elif liab < 0.60:
+            debt_score += 5
+        elif liab < 0.75:
+            debt_score -= 5
+        else:
+            debt_score -= 15
+    if quick is not None:
+        debt_parts.append(f"速动比率={quick:.2f}")
+        if quick > 1.5:
+            debt_score += 10
+        elif quick > 1.0:
+            debt_score += 5
+        elif quick < 0.5:
+            debt_score -= 10
+    debt_score = max(5, min(95, debt_score))
+
+    # ── 现金流质量 (权重15%) ──
+    cfo_to_np = fundamentals.get('years', {}).get(
+        max(fundamentals.get('years', {})), {}).get('cfo_to_np')
+    cfo_to_or = fundamentals.get('years', {}).get(
+        max(fundamentals.get('years', {})), {}).get('cfo_to_or')
+    cf_score = 50
+    cf_parts = []
+    if cfo_to_np is not None:
+        cf_parts.append(f"现金流/净利={cfo_to_np:.2f}")
+        if cfo_to_np > 1.2:
+            cf_score += 25
+        elif cfo_to_np > 0.8:
+            cf_score += 15
+        elif cfo_to_np > 0.5:
+            cf_score += 5
+        elif cfo_to_np > 0:
+            cf_score -= 5
+        else:
+            cf_score -= 20
+    if cfo_to_or is not None:
+        cf_parts.append(f"现金/营收={cfo_to_or:.2f}")
+    cf_score = max(5, min(95, cf_score))
+
+    # ── 增长 (营收+利润, 权重15%) ──
+    profit_g = fl.get_profit_growth(fundamentals)
+    revenue_g = fl.get_revenue_growth(fundamentals)
+    growth_score = 50
+    growth_parts = []
+    if profit_g is not None:
+        growth_parts.append(f"净利润增={profit_g*100:.1f}%")
+        if profit_g > 0.30:
+            growth_score += 20
+        elif profit_g > 0.15:
+            growth_score += 12
+        elif profit_g > 0:
+            growth_score += 3
+        elif profit_g > -0.15:
+            growth_score -= 8
+        else:
+            growth_score -= 15
+    if revenue_g is not None:
+        growth_parts.append(f"营收增={revenue_g*100:.1f}%")
+        if revenue_g > 0.20:
+            growth_score += 10
+        elif revenue_g > 0.10:
+            growth_score += 5
+        elif revenue_g > 0:
+            growth_score += 2
+        elif revenue_g < -0.10:
+            growth_score -= 10
+    growth_score = max(5, min(95, growth_score))
+
+    # ── 综合 ──
+    total = (roe_score * 0.35 + margin_score * 0.15 + debt_score * 0.20
+             + cf_score * 0.15 + growth_score * 0.15)
+    total = round(max(5, min(95, total)), 1)
+
+    desc_parts = [roe_desc] + margin_parts + debt_parts + cf_parts + growth_parts
+    desc = ', '.join(filter(None, desc_parts))
+    return total, desc
+
+
+def analyze_factors(kline_data, quote, news_sentiment=0, sr=None, fundamentals=None):
     """
     多因子评分 (0-100)
     因子维度: 价值、质量、动量、技术、情绪、支撑压力
+
+    fundamentals: 来自 fundamentals_loader.get(code) 的字典或 None
     """
     closes = [k['close'] for k in kline_data]
     if len(closes) < 60:
@@ -25,13 +176,17 @@ def analyze_factors(kline_data, quote, news_sentiment=0, sr=None):
     if pb > 10: value_score = max(10, value_score - 10)
     scores['value'] = {'score': value_score, 'weight': 0.20, 'desc': f'PE={pe:.1f}, PB={pb:.2f}'}
 
-    # 2. 质量因子 (ROE替代, 权重15%)
-    # 从股价走势简单推导质量（连续上涨通常隐含基本面改善）
-    recent_60 = closes[-60:]
-    ret_60 = (recent_60[-1] - recent_60[0]) / recent_60[0] if recent_60[0] != 0 else 0
-    quality = 50 + ret_60 * 100
-    quality = max(10, min(90, quality))
-    scores['quality'] = {'score': quality, 'weight': 0.15, 'desc': f'60日涨幅={ret_60*100:.1f}%'}
+    # 2. 质量因子 (权重15%)
+    if fundamentals:
+        quality, quality_desc = _score_quality_from_fundamentals(fundamentals)
+    else:
+        # 无基本面数据时回退到价格走势推导
+        recent_60 = closes[-60:]
+        ret_60 = (recent_60[-1] - recent_60[0]) / recent_60[0] if recent_60[0] != 0 else 0
+        quality = 50 + ret_60 * 100
+        quality = max(10, min(90, quality))
+        quality_desc = f'60日涨幅={ret_60*100:.1f}%(无基本面)'
+    scores['quality'] = {'score': quality, 'weight': 0.15, 'desc': quality_desc}
 
     # 3. 动量因子 (权重25%)
     periods = [(5, 0.3), (20, 0.3), (60, 0.4)]
