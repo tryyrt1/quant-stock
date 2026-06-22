@@ -295,6 +295,31 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     <div id="predictionResults"></div>
   </div>
 
+<div id="page-weekly-picks" class="hide">
+  <div class="card">
+    <div class="card-title">📊 周线选股结果</div>
+    <div style="font-size:12px;color:#aaa;margin-bottom:8px">
+      条件: 周量连续放大 | 周均线向上 | 突破前高后回调缩量
+      <span id="weeklyPicksMeta" style="margin-left:10px;color:#4fc3f7"></span>
+    </div>
+    <div id="weeklyPicksList" style="max-height:calc(100vh - 280px);overflow-y:auto">
+      <div class="loading" style="text-align:center;padding:20px"><span class="spinner"></span>加载中...</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title" style="cursor:pointer" onclick="toggleCollapse('weeklyAlertBody')">
+      ⚡ 实时异动 <span id="weeklyAlertCount" style="font-size:12px"></span>
+      <span id="weeklyAlertBodyToggle" style="font-size:14px;color:#888">▼</span>
+    </div>
+    <div id="weeklyAlertBody" style="margin-top:8px">
+      <div id="weeklyAlertList" style="display:flex;flex-direction:column;gap:6px">
+        <div style="text-align:center;padding:20px;color:var(--dim)">待实现...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
   <div class="disclaimer">数据仅供参考，不构成投资建议 | 腾讯财经/东方财富</div>
 
   <div class="disclaimer" style="color:#555;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:0">China.柳州.Guoa</div>
@@ -309,6 +334,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div class="tab" data-tab="patterns" onclick="switchTab('patterns');loadSnapshots()"><span class="tab-icon">🎯</span>选股模式</div>
   <div class="tab" data-tab="sectors" onclick="switchTab('sectors');loadSectorList();loadHotSectors();loadHeatHistory();loadSnapshots()"><span class="tab-icon">🧩</span>板块追踪</div>
 	  <div class="tab" data-tab="predictions" onclick="switchTab('predictions');loadPredictions()"><span class="tab-icon">📈</span>预测统计</div>
+	  <div class="tab" data-tab="weekly-picks" onclick="switchTab('weekly-picks');loadWeeklyPicks()"><span class="tab-icon">📊</span>周线选股</div>
 	  <div class="tab" data-tab="intraday" onclick="switchTab('intraday');loadIntradayMonitor()"><span class="tab-icon">⚡</span>实时追踪</div>
 </div>
 
@@ -1452,6 +1478,7 @@ function switchTab(tab) {
   document.getElementById('page-intraday').classList.toggle('hide',tab!=='intraday')
     document.getElementById('page-intraday').classList.toggle('hide',tab!=='intraday')
     document.getElementById('page-predictions').classList.toggle('hide',tab!=='predictions')
+    document.getElementById('page-weekly-picks').classList.toggle('hide',tab!=='weekly-picks')
 }
 function showHome() { switchTab('home') }
 function showDetail() { switchTab('detail') }
@@ -2671,6 +2698,47 @@ async function loadHeatHistory() {
 
 
 // ═══════════════════════════════════════════════
+
+// ─── 周线选股 ───
+async function loadWeeklyPicks() {
+  const data = await api('/api/weekly/picks')
+  renderWeeklyPicks(data)
+}
+
+function renderWeeklyPicks(data) {
+  const el = document.getElementById('weeklyPicksList')
+  const meta = document.getElementById('weeklyPicksMeta')
+  if (!data || !data.picks || data.picks.length === 0) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">暂无数据</div>'
+    if (data && data.error) el.innerHTML = '<div style="text-align:center;padding:20px;color:#ff6b6b">' + data.error + '</div>'
+    return
+  }
+  meta.textContent = data.updated + ' | 扫描' + data.total_scanned + '只 | 选出' + data.total_matched + '只'
+
+  var html = ''
+  for (var i = 0; i < data.picks.length; i++) {
+    var p = data.picks[i]
+    var cc = p.change_pct > 0 ? 'up' : (p.change_pct < 0 ? 'down' : '')
+    var sign = p.change_pct > 0 ? '+' : ''
+    var sigs = ''
+    if (p.signals) {
+      for (var s = 0; s < p.signals.length; s++) {
+        sigs += '<span style="padding:1px 4px;border-radius:3px;font-size:10px;background:var(--accent);color:#000;margin-right:2px">' + p.signals[s] + '</span>'
+      }
+    }
+    html += '<div onclick=\'loadDetail("' + p.code + '","' + p.market + '")\' style="display:flex;align-items:center;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px">' +
+      '<span style="width:24px;color:#666">' + (i+1) + '</span>' +
+      '<span style="width:110px;font-weight:500;overflow:hidden">' + (p.name || p.code) + '</span>' +
+      '<span style="color:#888;font-size:11px">(' + p.code + ')</span>' +
+      '<span style="margin-left:6px;font-weight:500">¥' + (p.latest_price || 0).toFixed(2) + '</span>' +
+      '<span class="' + cc + '" style="margin-left:4px;font-size:11px">' + sign + (p.change_pct || 0).toFixed(1) + '%</span>' +
+      '<span style="margin-left:10px;color:#4fc3f7;font-size:11px">连增' + (p.volume_consecutive || 0) + '周</span>' +
+      '<span style="margin-left:6px;color:#888;font-size:11px">MA5:' + (p.ma5 || '-') + '</span>' +
+      sigs +
+    '</div>'
+  }
+  el.innerHTML = html
+}
 
 function toggleCollapse(id) {
   var body = document.getElementById(id)
