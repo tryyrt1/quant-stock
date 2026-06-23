@@ -223,28 +223,6 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     <div id="patternResults"></div>
   </div>
 
-  	  <!-- ===== 板块追踪页 ===== -->
-	  <div id="page-sectors" class="hide">
-	    <div id="hotSectorsContainer">
-	      <div class="card">
-	        <div class="card-title">🔥 热度排行 Top 30 <span style="font-size:11px;color:#888;font-weight:400">全市场热度排名（前30）</span></div>
-	        <div class="refresh-bar">
-	          <span class="info" id="hotSectorsInfo">自动扫描中...</span>
-	          <button onclick="loadHotSectors()" style="font-size:11px;padding:4px 10px;background:rgba(255,71,87,.15);border:1px solid rgba(255,71,87,.3);color:#ff4757;border-radius:6px;cursor:pointer">🔄 刷新</button>
-	        </div>
-	        <div id="hotSectorsResult"><div style="text-align:center;padding:12px"><span class="spinner"></span>加载中...</div></div>
-	      </div>
-	    </div>
-	    <div id="sectorResults"></div>
-    <!-- 板块热度卡（合并到板块追踪页内） -->
-    <div id="heatHistoryContainer">
-      <div class="card">
-        <div class="card-title">📊 板块热度追踪 <span style="font-size:11px;color:#888;font-weight:400">近5日进入热度前10次数</span></div>
-        <div id="heatHistoryResult"><div style="text-align:center;padding:12px"><span class="spinner"></span>加载中...</div></div>
-      </div>
-    </div>
-  </div>
-
 
 <!-- ===== 每日一股 ===== -->
   <div id="page-dailypick" class="hide">
@@ -255,7 +233,6 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     </div>
   </div>
 
-  <!-- ===== 预测统计页 ===== -->
   <div id="page-intraday" class="hide">
     <div class="card" style="margin-bottom:8px">
       <div onclick="toggleCollapse('cpoolBody')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none">
@@ -285,16 +262,6 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
       </div>
     </div>
   </div>
-<div id="page-predictions" class="hide">
-    <div class="card">
-      <div class="card-title">📈 预测统计</div>
-      <div id="closingSpike" style="margin-bottom:8px"></div>
-      <div style="font-size:12px;color:#aaa;margin-bottom:10px">每天18个时间点(09:25~15:10, 15分钟间隔)记录信号，多日追踪验证，曲线图展示预测vs实际走势</div>
-      <div id="predictionStats"><div class="loading" style="text-align:center;padding:20px"><span class="spinner"></span>加载中...</div></div>
-    </div>
-    <div id="predictionResults"></div>
-  </div>
-
 <div id="page-weekly-picks" class="hide">
   <div class="card">
     <div class="card-title">📊 周线选股结果</div>
@@ -320,6 +287,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   </div>
 </div>
 
+  <div id="page-volume-scan" class="hide">
+    <div class="card">
+      <div class="card-title">📈 量比换手率扫描 <span style="font-size:11px;color:#888;font-weight:400">全市场三档筛选</span></div>
+      <div class="refresh-bar">
+        <span class="info" id="volScanInfo">点击🔄刷新开始扫描</span>
+        <button onclick="refreshVolumeScan()" style="font-size:11px;padding:4px 10px;background:rgba(0,210,255,.15);border:1px solid rgba(0,210,255,.3);color:var(--accent);border-radius:6px;cursor:pointer">🔄 刷新</button>
+      </div>
+      <div id="volScanResult"></div>
+    </div>
+  </div>
+
   <div class="disclaimer">数据仅供参考，不构成投资建议 | 腾讯财经/东方财富</div>
 
   <div class="disclaimer" style="color:#555;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:0">China.柳州.Guoa</div>
@@ -332,9 +310,8 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
   <div class="tab" data-tab="dailypick" onclick="switchTab('dailypick');loadDailyPick()"><span class="tab-icon">⭐</span>每日一股</div>
   <div class="tab" data-tab="patterns" onclick="switchTab('patterns');loadSnapshots()"><span class="tab-icon">🎯</span>选股模式</div>
-  <div class="tab" data-tab="sectors" onclick="switchTab('sectors');loadSectorList();loadHotSectors();loadHeatHistory();loadSnapshots()"><span class="tab-icon">🧩</span>板块追踪</div>
-	  <div class="tab" data-tab="predictions" onclick="switchTab('predictions');loadPredictions()"><span class="tab-icon">📈</span>预测统计</div>
 	  <div class="tab" data-tab="weekly-picks" onclick="switchTab('weekly-picks');loadWeeklyPicks()"><span class="tab-icon">📊</span>周线选股</div>
+	  <div class="tab" data-tab="volume-scan" onclick="switchTab('volume-scan');loadVolumeScan()"><span class="tab-icon">📈</span>量比扫描</div>
 	  <div class="tab" data-tab="intraday" onclick="switchTab('intraday');loadIntradayMonitor()"><span class="tab-icon">⚡</span>实时追踪</div>
 </div>
 
@@ -1277,196 +1254,6 @@ async function refreshDailyPick() {
   }, 5000)
 }
 
-// ===================== Sector / Board Tracking =====================
-let sectorScanning = false
-let selectedSectors = []
-
-async function loadHotSectors() {
-  const el = document.getElementById('hotSectorsResult')
-  if (!el) return
-  const data = await apiPost('/api/sectors/hot', {top_n: 30})
-  if (data && data.sectors && data.sectors.length > 0) {
-    renderHotSectors(data.sectors)
-    document.getElementById('hotSectorsInfo').textContent =
-      `自动扫描 ${data.total_stocks} 只股票, ${data.total_patterns} 个形态`
-  } else {
-    el.innerHTML = '<div class="card" style="text-align:center;padding:12px;color:var(--dim);font-size:12px">暂无异动板块数据</div>'
-  }
-}
-
-function renderHotSectors(sectors) {
-  const el = document.getElementById('hotSectorsResult')
-  if (!sectors || sectors.length === 0) {
-    el.innerHTML = '<div class="card" style="text-align:center;padding:12px;color:var(--dim)">暂无异动板块 <span style="font-size:10px;color:#555">(数据源暂不可用)</span></div>'
-    return
-  }
-  let html = ''
-  sectors.forEach((sec, idx) => {
-    const heatVal = sec.heat || 0
-    const heatCls = heatVal >= 70 ? '#ff4757' : heatVal >= 55 ? '#ffa502' : heatVal >= 40 ? '#00d2ff' : '#888'
-    const chgCls = (sec.change_pct||0) >= 0 ? 'up' : 'down'
-    const chgStr = sec.change_pct ? `${sec.change_pct >= 0 ? '+' : ''}${sec.change_pct}%` : ''
-    const rankLabel = sec.heat_rank ? `🔥热度第${sec.heat_rank}名` : ''
-
-    html += `<div class="card" style="border-left:3px solid ${heatCls};padding:10px 14px">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          ${rankLabel ? `<span style="font-size:10px;font-weight:600;color:${heatCls}">${rankLabel}</span><br>` : ''}
-          <span style="font-size:13px;font-weight:600;color:#eee">${sec.name}</span>
-          <span style="font-size:10px;color:var(--dim);margin-left:6px">${sec.type === 'hot_concept' ? '概念' : '行业'}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:11px;color:${heatCls};font-weight:600">${sec.heat_signal || sec.heat}</span>
-          <span class="${chgCls}" style="font-size:12px;font-weight:600">${chgStr}</span>
-        </div>
-      </div>
-      ${sec.heat != null ? '<div style="margin:4px 0;height:4px;background:rgba(255,255,255,.06);border-radius:2px"><div style="width:' + Math.min(100,sec.heat) + '%;height:100%;background:' + heatCls + ';border-radius:2px"></div></div>' : ''}
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:#888">
-        <span>上涨 ${sec.up_count||0}/${sec.stock_count||0} | 形态 ${sec.pattern_count||0}</span>
-        ${sec.prediction ? '<span style="color:#aaa;flex:1;text-align:right;margin-left:8px">' + sec.prediction + '</span>' : ''}
-      </div>
-      ${sec.news_signal ? `<div style="font-size:10px;color:#ffa502;margin-top:2px">📰 ${sec.news_signal}</div>` : ''}
-    </div>`
-  })
-  el.innerHTML = html
-}
-
-async function loadSectorList() {
-  const grid = document.getElementById('sectorGrid')
-  if (grid.children.length > 0 && grid.dataset.loaded) return
-  grid.innerHTML = '<div style="font-size:12px;color:var(--dim);padding:8px">加载板块列表...</div>'
-  const data = await apiPost('/api/sectors/list', {})
-  if (!data || !data.sectors) {
-    grid.innerHTML = '<div style="font-size:12px;color:#ff6b6b;padding:8px">板块列表获取失败</div>'
-    return
-  }
-  let html = ''
-  data.sectors.forEach(s => {
-    const count = s.found ? `(${s.stock_count}只)` : ''
-    html += `<label style="display:flex;align-items:center;gap:4px;padding:6px 8px;
-      background:rgba(255,255,255,.04);border-radius:6px;font-size:12px;cursor:pointer;
-      ${s.found ? '' : 'opacity:.4'}">
-      <input type="checkbox" value="${s.sector_code}" data-name="${s.display_name}" ${s.found ? '' : 'disabled'} onchange="onSectorToggle(this)">
-      <span>${s.display_name} ${count}</span>
-      ${s.found ? '' : '<span style="color:#ff6b6b;font-size:10px;margin-left:2px">未找到</span>'}
-    </label>`
-  })
-  grid.innerHTML = html
-  grid.dataset.loaded = '1'
-}
-
-function onSectorToggle(cb) {
-  if (cb.checked) {
-    selectedSectors.push({code: cb.value, name: cb.dataset.name})
-  } else {
-    selectedSectors = selectedSectors.filter(s => s.code !== cb.value)
-  }
-  document.getElementById('sectorScanInfo').textContent =
-    selectedSectors.length > 0 ? `已选 ${selectedSectors.length} 个板块` : '请选择板块'
-}
-
-async function addCustomSector() {
-  const input = document.getElementById('customSectorInput')
-  const name = input.value.trim()
-  if (!name) return
-  input.placeholder = '搜索中...'; input.disabled = true
-  const data = await apiPost('/api/sectors/list', {names: [name]})
-  if (data && data.sectors && data.sectors[0] && data.sectors[0].found) {
-    const s = data.sectors[0]
-    const grid = document.getElementById('sectorGrid')
-    const label = document.createElement('label')
-    label.style.cssText = 'display:flex;align-items:center;gap:4px;padding:6px 8px;background:rgba(0,210,255,.08);border-radius:6px;font-size:12px;cursor:pointer;border:1px solid var(--accent)'
-    label.innerHTML = `<input type="checkbox" value="${s.sector_code}" data-name="${s.display_name}" checked onchange="onSectorToggle(this)"><span>${s.display_name} (${s.stock_count}只)</span>`
-    grid.appendChild(label)
-    selectedSectors.push({code: s.sector_code, name: s.display_name})
-    document.getElementById('sectorScanInfo').textContent = `已选 ${selectedSectors.length} 个板块`
-    input.value = ''
-  } else {
-    alert(`未找到板块: ${name}`)
-  }
-  input.placeholder = '输入自定义板块名(如：算力) 回车添加'
-  input.disabled = false; input.focus()
-}
-
-async function scanSectors() {
-  if (sectorScanning) return
-  if (selectedSectors.length === 0) { alert('请先选择板块'); return }
-  sectorScanning = true
-  const btn = document.getElementById('btnSectorScan')
-  btn.innerHTML = '<span class="spinner"></span>扫描中...'; btn.disabled = true
-  document.getElementById('sectorScanInfo').textContent = '获取板块成分股并分析形态，约需30-60秒...'
-  const data = await apiPost('/api/sectors/scan', {
-    sector_codes: selectedSectors.map(s => s.code), max_stocks: 30
-  })
-  if (data && data.sectors) {
-    document.getElementById('sectorInfo').textContent =
-      `上次扫描: ${new Date().toLocaleTimeString()} | ${data.total_sectors}个板块 ${data.total_stocks}只股票 ${data.total_patterns}个形态`
-    renderSectorResults(data.sectors)
-    document.getElementById('sectorScanInfo').textContent = `扫描完成，${data.total_patterns}个形态匹配`
-  } else {
-    document.getElementById('sectorScanInfo').textContent = '扫描失败，请重试'
-  }
-  sectorScanning = false
-  btn.innerHTML = '🔍 扫描板块'; btn.disabled = false
-}
-
-function renderSectorResults(sectors) {
-  const el = document.getElementById('sectorResults')
-  if (!sectors || sectors.length === 0) {
-    el.innerHTML = '<div class="empty"><div class="empty-icon">🧩</div><div>暂无结果 <span style="font-size:10px;color:#555">(数据源暂不可用)</span></div></div>'; return
-  }
-  let html = ''
-  const patColors = {
-    '连续上攻': '#00d2ff', '均线金叉': '#ff4757', 'OBV价升创新高': '#a05aff',
-    '超跌筛选': '#ff4646', '首板涨停': '#ffd700',
-  }
-  sectors.forEach(sec => {
-    const upPct = sec.stock_count > 0 ? (sec.up_count / sec.stock_count * 100).toFixed(0) : 0
-    const downPct = sec.stock_count > 0 ? (sec.down_count / sec.stock_count * 100).toFixed(0) : 0
-    const hasPatterns = sec.pattern_count > 0
-    const heatColor = sec.heat >= 70 ? '#ff4757' : sec.heat >= 55 ? '#ffa502' : sec.heat >= 40 ? '#00d2ff' : '#888'
-    html += `<div class="card" style="border-left:3px solid ${hasPatterns ? heatColor : 'var(--dim)'}">
-      <div class="card-title" style="display:flex;justify-content:space-between;flex-wrap:wrap">
-        <span>🧩 ${sec.name} <span style="font-size:11px;color:var(--dim);font-weight:400">${sec.stock_count}只</span>
-          <span style="font-size:10px;color:#777;margin-left:4px">${sec.type||''}</span>
-          ${sec.heat ? `<span style="font-size:10px;color:${heatColor};margin-left:6px;font-weight:600">${sec.heat_signal || sec.heat}</span>` : ''}
-        </span>
-        <span>
-          <span style="color:#2ed573;font-size:12px">↑${sec.up_count}</span>
-          <span style="color:#ff4757;font-size:12px;margin-left:6px">↓${sec.down_count}</span>
-          ${hasPatterns ? `<span style="background:rgba(0,210,255,.15);color:var(--accent);font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px">🎯${sec.pattern_count}</span>` : ''}
-        </span>
-      </div>
-      ${sec.heat ? `<div style="height:3px;background:rgba(255,255,255,.06);border-radius:2px;margin-bottom:4px"><div style="width:${Math.min(100,sec.heat)}%;height:100%;background:${heatColor};border-radius:2px"></div></div>` : ''}
-      ${sec.prediction ? `<div style="font-size:10px;color:#aaa;margin-bottom:6px">💡 ${sec.prediction}</div>` : ''}
-      ${sec.news_signal ? `<div style="font-size:10px;color:#ffa502;margin-bottom:6px">📰 ${sec.news_signal}</div>` : ''}
-      <div style="height:3px;background:rgba(255,255,255,.06);border-radius:2px;margin-bottom:8px;display:flex">
-        <div style="width:${upPct}%;background:#2ed573;border-radius:2px 0 0 2px"></div>
-        <div style="width:${100-upPct}%;background:#ff4757;border-radius:0 2px 2px 0"></div>
-      </div>`
-    sec.stocks.forEach(stk => {
-      const chgCls = stk.change_pct > 0 ? 'up' : (stk.change_pct < 0 ? 'down' : '')
-      const chgStr = stk.change_pct ? `${stk.change_pct >= 0 ? '+' : ''}${stk.change_pct}%` : ''
-      const patTags = (stk.patterns || []).map(p => {
-        const c = patColors[p.name] || 'var(--accent)'
-        return `<span style="background:rgba(0,210,255,.1);color:${c};font-size:10px;padding:1px 5px;border-radius:3px;margin-right:3px;border:1px solid rgba(255,255,255,.05)">${p.name}</span>`
-      }).join('')
-      html += `<div class="stock-card" style="cursor:pointer" onclick='loadDetail("${stk.code}","${stk.market}")'>
-        <div class="sc-left">
-          <div><span class="sc-name">${stk.name}</span><span class="sc-code">${stk.market.toUpperCase()}.${stk.code}</span></div>
-          <div style="margin-top:3px">${patTags}</div>
-        </div>
-        <div class="sc-right">
-          <span class="sc-price ${chgCls}">${chgStr}</span>
-          <span style="font-size:13px;font-weight:700">${stk.price || ''}</span>
-        </div>
-      </div>`
-    })
-    html += `</div>`
-  })
-  el.innerHTML = html
-}
-
 // ===================== Navigation =====================
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab))
@@ -1474,10 +1261,8 @@ function switchTab(tab) {
   document.getElementById('page-detail').classList.toggle('hide',tab!=='detail')
   document.getElementById('page-dailypick').classList.toggle('hide',tab!=='dailypick')
   document.getElementById('page-patterns').classList.toggle('hide',tab!=='patterns')
-  document.getElementById('page-sectors').classList.toggle('hide',tab!=='sectors')
+  document.getElementById('page-volume-scan').classList.toggle('hide',tab!=='volume-scan')
   document.getElementById('page-intraday').classList.toggle('hide',tab!=='intraday')
-    document.getElementById('page-intraday').classList.toggle('hide',tab!=='intraday')
-    document.getElementById('page-predictions').classList.toggle('hide',tab!=='predictions')
     document.getElementById('page-weekly-picks').classList.toggle('hide',tab!=='weekly-picks')
 }
 function showHome() { switchTab('home') }
@@ -1626,288 +1411,7 @@ async function loadSnapshots() {
       info.textContent = `📁 自动扫描 @ ${data.patterns?.time || data.time || '?'} | ${state.patterns.length}个形态 | 点击"扫描"获取最新`
     }
   }
-  if (t === 'sectors' && data.sectors) {
-    const info = document.getElementById('sectorInfo')
-    if (info) info.textContent = `📁 自动扫描 @ ${data.sectors.time || data.time || '?'} | ${data.sectors.total_sectors}个板块 ${data.sectors.total_patterns}个形态`
-    if (data.sectors.sectors && data.sectors.sectors.length) {
-      renderSectorResults(data.sectors.sectors)
-    }
-  }
   _loadingSnapshots = false
-}
-
-// ─── 预测统计 ───
-async function loadPredictions() {
-  const [predict, ndStats] = await Promise.all([
-    api('/api/watchlist/predict'),
-    api('/api/predictions/stats'),
-  ])
-  renderWLPatterns(predict, ndStats)
-  updateClosingMonitor()
-}
-
-// 尾盘拉抬监控
-let _closingSpikes = []
-let _closingTimer = null
-
-async function updateClosingMonitor() {
-  const el = document.getElementById('closingSpike')
-  if (!el) return
-  const data = await api('/api/scan/closing')
-  if (!data) return
-
-  if (data.status === 'waiting') {
-    el.innerHTML = '<div style="font-size:11px;color:#555;text-align:center;padding:4px">⏰ ' + data.message + '</div>'
-    return
-  }
-  if (data.status === 'baseline') {
-    el.innerHTML = '<div style="font-size:11px;color:#888;text-align:center;padding:4px">⏰ ' + data.message + '</div>'
-    _closingSpikes = []
-    if (!_closingTimer) startClosingTimer()
-    return
-  }
-  if (data.status === 'active' || data.status === 'done') {
-    if (data.spikes) _closingSpikes = data.spikes
-    var count = _closingSpikes.length
-    var summary = ''
-    if (count > 0) {
-      summary = '<span style="color:#ff4757;font-weight:600">' + count + '只</span>'
-    } else {
-      summary = '<span style="color:#888">暂无</span>'
-    }
-    var listHtml = ''
-    if (count > 0) {
-      listHtml += '<div id="closingList" style="max-height:200px;overflow-y:auto;margin-top:4px">'
-      _closingSpikes.forEach(function(s) {
-        var sc = s.spike_pct >= 3 ? "#ff4757" : "#ffa502"
-        listHtml += '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.03)">' +
-          '<span>' + s.name + ' <span style="color:#888">' + s.code + '</span></span>' +
-          '<span style="color:' + sc + ';font-weight:600">+' + s.spike_pct + '% <span style="color:#888;font-weight:400">' + s.price + '</span></span></div>'
-      })
-      listHtml += '</div>'
-    }
-    var statusText = data.status === 'active' ? '监控中，每10秒更新' : data.message
-    var html = '<div style="background:rgba(255,71,87,.05);border-radius:6px;padding:6px 8px;font-size:11px;border-left:3px solid #ff4757;cursor:pointer" onclick="toggleClosingList(this)">' +
-      '<div style="display:flex;justify-content:space-between;color:#aaa">' +
-      '<span>🚀 尾盘拉抬 ' + summary + '</span>' +
-      '<span>' + timeStr() + ' | ' + (count > 0 ? '点击展开' : '') + '</span></div>' +
-      (count > 0 ? listHtml : '') +
-      '<div style="font-size:10px;color:#555;margin-top:2px">' + statusText + '</div></div>'
-    el.innerHTML = html
-
-    if (data.status === 'active' && !_closingTimer) startClosingTimer()
-    if (data.status === 'done' && _closingTimer) { clearInterval(_closingTimer); _closingTimer = null }
-  }
-}
-
-function startClosingTimer() {
-  if (_closingTimer) clearInterval(_closingTimer)
-  _closingTimer = setInterval(function() {
-    var now = new Date()
-    var h = now.getHours(), m = now.getMinutes()
-    var hm = h * 60 + m
-    if (hm >= 14 * 60 + 15 && hm <= 15 * 60) {
-      updateClosingMonitor()
-    } else {
-      clearInterval(_closingTimer)
-      _closingTimer = null
-    }
-  }, 10000)
-}
-
-function toggleClosingList(btn) { var el=document.getElementById('closingList'); if(el) el.style.display=el.style.display==='none'?'':'none'; }
-function timeStr() {
-  var d = new Date()
-  return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2) + ':' + ('0'+d.getSeconds()).slice(-2)
-}
-
-function renderWLPatterns(predict, ndStats) {
-  const el = document.getElementById('predictionStats')
-  const resultsEl = document.getElementById('predictionResults')
-
-  if (!predict || !predict.results) {
-    el.innerHTML = '<div class="card"><div class="loading" style="text-align:center;padding:30px"><span class="spinner"></span>加载中...</div></div>'
-    return
-  }
-
-  const ptnIcons = {'一直涨':'📈','先涨后跌':'📊','先跌后涨':'📉','一直跌':'📉','震荡':'📊'}
-  const ptnColors = {'一直涨':'#2ed573','先涨后跌':'#ffa502','先跌后涨':'#00d2ff','一直跌':'#ff4757','震荡':'#888'}
-
-  let html = '<div style="margin-bottom:8px;font-size:12px;color:#aaa">📊 自选股走势预测 · 09:25开盘锁定</div>'
-
-  predict.results.forEach(r => {
-    const chgCls = r.change_pct >= 0 ? 'up' : 'down'
-    const chgSign = r.change_pct >= 0 ? '+' : ''
-    const icon = ptnIcons[r.pattern] || '📊'
-    const ptnClr = ptnColors[r.pattern] || '#888'
-    const barW = Math.min(100, Math.max(5, r.confidence || 50))
-    const reasonsHtml = r.reasons && r.reasons.length ? '<div style="font-size:10px;color:#888;margin-top:4px">' + r.reasons.join(' · ') + '</div>' : ''
-    const verifiedHtml = r.verified ? (r.correct === true ? '<span style="font-size:11px;color:#2ed573">✅ 验证正确</span>' : '<span style="font-size:11px;color:#ff4757">❌ 验证错误</span>') : '<span style="font-size:10px;color:#555">待验证</span>'
-
-    html += '<div class="card" style="padding:10px;margin-bottom:6px">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center">' +
-        '<div><span style="font-size:14px;font-weight:700">' + r.name + '</span>' +
-        '<span style="font-size:10px;color:#888;margin-left:6px">' + r.code + '</span></div>' +
-        '<div style="text-align:right"><span style="font-size:14px;font-weight:700">' + r.price + '</span>' +
-        '<span class="' + chgCls + '" style="font-size:11px;margin-left:6px">' + chgSign + r.change_pct + '%</span></div>' +
-      '</div>' +
-      '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-        '<span style="font-size:16px">' + icon + '</span>' +
-        '<span style="font-size:13px;color:' + ptnClr + ';font-weight:600">' + r.pattern + '</span>' +
-        '<span style="font-size:10px;color:#888">' + r.confidence + '%</span>' +
-        verifiedHtml +
-        (r.next_dir ? '<span style="font-size:11px;color:' + (r.next_dir === '涨' ? '#2ed573' : '#ff4757') + '">📅 次日' + r.next_dir + '</span>' : '') +
-      '</div>' +
-      reasonsHtml +
-    '</div>'
-  })
-
-  el.innerHTML = html
-
-  // 次日预测统计
-  if (ndStats) {
-    const acc = ndStats.total > 0 ? ndStats.accuracy : 0
-    const accClr = acc >= 60 ? '#2ed573' : acc >= 40 ? '#ffa502' : '#ff4757'
-    let ndHtml = '<div class="card" style="margin-top:8px">' +
-      '<div class="card-title">📅 次日预测统计</div>'
-
-    if (ndStats.today_predictions && ndStats.today_predictions.length) {
-      ndHtml += '<div style="font-size:12px;color:#aaa;margin-bottom:4px">今日预测:</div>'
-      ndStats.today_predictions.forEach(p => {
-        const ss = ndStats.stock_stats && ndStats.stock_stats[p.code]
-        let accHtml = ''
-        if (ss && ss.total > 0) {
-          const aClr = ss.accuracy >= 60 ? '#2ed573' : ss.accuracy >= 40 ? '#ffa502' : '#ff4757'
-          accHtml = '<span style="font-size:10px;color:' + aClr + '"> 历史' + ss.accuracy + '% (' + ss.correct + '/' + ss.total + ')</span>'
-        } else {
-          accHtml = '<span style="font-size:10px;color:#555"> 暂无历史</span>'
-        }
-        ndHtml += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(255,255,255,.04)">' +
-          '<span>' + p.name + accHtml + '</span>' +
-          '<span style="color:' + (p.direction === '涨' ? '#2ed573' : '#ff4757') + ';font-weight:600">' + p.direction + '</span></div>'
-      })
-    }
-
-    ndHtml += '<div style="margin-top:8px;display:flex;justify-content:space-around;font-size:12px;padding:8px;background:rgba(255,255,255,.03);border-radius:4px">' +
-      '<div style="text-align:center"><div style="font-size:24px;font-weight:800;color:' + accClr + '">' + acc + '%</div><div style="font-size:10px;color:#888">历史准确率</div></div>' +
-      '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:#eee">' + (ndStats.correct || 0) + '</div><div style="font-size:10px;color:#888">正确</div></div>' +
-      '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:#eee">' + (ndStats.total || 0) + '</div><div style="font-size:10px;color:#888">总计</div></div>' +
-    '</div></div>'
-
-    resultsEl.innerHTML = ndHtml
-  } else {
-    resultsEl.innerHTML = '<div class="card" style="margin-top:8px;text-align:center;padding:20px;color:var(--dim)">暂无次日预测数据</div>'
-  }
-}
-
-// ─── 多方法准确率对比矩阵 ───
-function renderMethodMatrix(methodStats, diagnose) {
-  const methodColors = {'trend':'#4fc3f7','patterns':'#a05aff','price_level':'#ffa502','volume':'#2ed573','sector':'#ff6b81','intraday':'#ffd700','capital':'#ff4757','composite':'#ff4757'}
-  const methodLabels = {'trend':'趋势','patterns':'形态','price_level':'价位','volume':'量能','sector':'板块','intraday':'分时','capital':'资金','composite':'综合'}
-  const offsets = [0, 1, 2, 3, 5, 10, 15, 20, 30]
-  const offsetLabels = {0:'当日',1:'+1日',2:'+2日',3:'+3日',5:'+5日',10:'+10日',15:'+15日',20:'+20日',30:'+30日'}
-
-  let html = '<div class="card" style="overflow-x:auto"><div class="card-title">📊 多方法预测准确率对比（自动回测）</div>'
-
-  if (!methodStats || Object.keys(methodStats).length === 0) {
-    html += '<div style="font-size:11px;color:#888;padding:8px 0">暂无数据，等待预测记录积累...</div>'
-    if (diagnose && diagnose.recommendations) {
-      for (const rec of diagnose.recommendations) {
-        const bg = rec.includes('✅') ? 'rgba(46,213,115,.08)' : 'rgba(0,210,255,.08)'
-        html += '<div style="padding:4px 8px;margin:2px 0;background:' + bg + ';border-radius:4px;font-size:10px;color:#aaa">' + rec + '</div>'
-      }
-    }
-    html += '</div>'
-    return html
-  }
-
-  const methodKeys = Object.keys(methodStats)
-  // Build table
-  html += '<table style="width:100%;border-collapse:collapse;font-size:10px;min-width:500px">'
-  html += '<tr style="color:#888">'
-  html += '<td style="padding:3px 4px;font-weight:600;position:sticky;left:0;background:#1a1a3e;z-index:1">方法</td>'
-  offsets.forEach(o => {
-    html += '<td style="padding:3px 4px;text-align:center;font-size:9px">' + (offsetLabels[o] || o) + '</td>'
-  })
-  html += '<td style="padding:3px 4px;text-align:center;font-size:9px;color:#555">样本</td>'
-  html += '</tr>'
-
-  // Compute column bests
-  const colBest = {}
-  offsets.forEach(o => {
-    let bestAcc = -1
-    methodKeys.forEach(mk => {
-      const od = methodStats[mk].offsets && methodStats[mk].offsets[String(o)]
-      if (od && od.accuracy > bestAcc) bestAcc = od.accuracy
-    })
-    colBest[o] = bestAcc
-  })
-
-  // Sort methods by +1日 accuracy desc
-  const sortedKeys = [...methodKeys].sort((a, b) => {
-    const a1 = methodStats[a].offsets && methodStats[a].offsets['1'] ? methodStats[a].offsets['1'].accuracy : 0
-    const b1 = methodStats[b].offsets && methodStats[b].offsets['1'] ? methodStats[b].offsets['1'].accuracy : 0
-    return b1 - a1
-  })
-
-  sortedKeys.forEach((mk, idx) => {
-    const s = methodStats[mk]
-    const cl = methodColors[mk] || '#888'
-    const label = methodLabels[mk] || mk
-    const rank = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : (idx + 1) + '.'
-    html += '<tr style="border-top:1px solid rgba(255,255,255,.04)">'
-    html += '<td style="padding:3px 4px;color:' + cl + ';font-weight:600;white-space:nowrap;position:sticky;left:0;background:#1a1a3e;z-index:1">' + rank + label + '</td>'
-    offsets.forEach(o => {
-      const od = s.offsets && s.offsets[String(o)]
-      if (od && od.total > 0) {
-        const isBest = od.accuracy >= colBest[o] && od.accuracy > 0
-        const highlight = isBest ? ';background:rgba(46,213,115,.12);border-radius:3px;font-weight:700' : ''
-        const color = od.accuracy >= 55 ? '#2ed573' : od.accuracy >= 45 ? '#ffa502' : '#ff4757'
-        html += '<td style="padding:3px 4px;text-align:center;color:' + color + highlight + '">' + od.accuracy + '%</td>'
-      } else {
-        html += '<td style="padding:3px 4px;text-align:center;color:#444">--</td>'
-      }
-    })
-    html += '<td style="padding:3px 4px;text-align:center;color:#555">' + s.total_records + '</td>'
-    html += '</tr>'
-  })
-
-  html += '</table>'
-
-  // Summary row: best and worst
-  let bestMethod = null, bestOffset = null, bestAcc = -1
-  let worstMethod = null, worstOffset = null, worstAcc = 101
-  for (const mk of methodKeys) {
-    const s = methodStats[mk]
-    if (!s.offsets) continue
-    for (const oStr of Object.keys(s.offsets)) {
-      const od = s.offsets[oStr]
-      if (od.accuracy > bestAcc) { bestAcc = od.accuracy; bestMethod = mk; bestOffset = parseInt(oStr) }
-      if (od.accuracy < worstAcc && od.total >= 3) { worstAcc = od.accuracy; worstMethod = mk; worstOffset = parseInt(oStr) }
-    }
-  }
-  if (bestMethod) {
-    const bLabel = methodLabels[bestMethod] || bestMethod
-    const wLabel = worstMethod ? (methodLabels[worstMethod] || worstMethod) : ''
-    html += '<div style="margin-top:6px;font-size:10px;color:#888;padding:4px 0">'
-    html += '最佳: <span style="color:#2ed573;font-weight:600">+' + (bestOffset>0?bestOffset:'当日') + '日' + bLabel + bestAcc + '%</span>'
-    if (worstMethod) {
-      html += ' | 最差: <span style="color:#ff4757">+' + worstOffset + '日' + wLabel + worstAcc + '%</span>'
-    }
-    html += '</div>'
-  }
-
-  // Recommendations
-  if (diagnose && diagnose.recommendations) {
-    for (const rec of diagnose.recommendations) {
-      const isGood = rec.includes('✅') || rec.includes('最佳')
-      const bg = isGood ? 'rgba(46,213,115,.08)' : 'rgba(0,210,255,.08)'
-      html += '<div style="padding:4px 8px;margin:2px 0;background:' + bg + ';border-radius:4px;font-size:10px;color:#aaa">' + rec + '</div>'
-    }
-  }
-
-  html += '</div>'
-  return html
 }
 
 function renderMethodBreakdown(methods) {
@@ -1925,118 +1429,6 @@ function renderMethodBreakdown(methods) {
   }
   if (parts.length === 0) return ''
   return '📊 ' + parts.join(' ')
-}
-
-// ─── 预测曲线图 ───
-function toggleTrackChart(cid, idx) {
-  const el = document.getElementById(cid)
-  if (!el) return
-  if (el.style.display !== 'none') {
-    el.style.display = 'none'
-    return
-  }
-  // 从保存的recent数据中查找对应记录
-  const recent = window.__recentPredictions || []
-  let i = 0
-  let found = null
-  for (const day of recent) {
-    for (const stk of day.stocks) {
-      for (const r of stk.records) {
-        if (i === idx) { found = r; break }
-        i++
-      }
-      if (found) break
-    }
-    if (found) break
-  }
-  if (!found || !found.verify_track || found.verify_track.length < 2) {
-    el.innerHTML = '<div style="font-size:11px;color:#888;padding:4px">暂无追踪数据</div>'
-    el.style.display = 'block'
-    return
-  }
-  el.innerHTML = renderTrackChart(found.verify_track, found.signal, found.score)
-  el.style.display = 'block'
-}
-
-function renderTrackChart(track, signal, score) {
-  // track: [{date, close}, ...], signal: 买入/增持/持有/减仓/卖出
-  if (!track || track.length < 2) return ''
-  const prices = track.map(t => t.close)
-  const dates = track.map(t => t.date.slice(5)) // MM-DD
-  const basePrice = prices[0]
-  const mn = Math.min(...prices)
-  const mx = Math.max(...prices)
-  const range = (mx - mn) || 1
-  const pad = range * 0.15
-  const yMin = mn - pad
-  const yMax = mx + pad
-  const yRange = yMax - yMin || 1
-
-  const W = 280, H = 120
-  const toX = (i) => i * (W - 30) / (prices.length - 1) + 15
-  const toY = (p) => H - 15 - ((p - yMin) / yRange * (H - 30))
-
-  // Actual price line
-  const actParts = prices.map((p, i) => `${toX(i).toFixed(1)},${toY(p).toFixed(1)}`)
-  const actPath = actParts.join(' ')
-
-  // Predicted projection: from basePrice, slope by signal
-  const signalSlopes = {'买入':0.005, '增持':0.003, '持有':0, '减仓':-0.003, '卖出':-0.005}
-  const slope = signalSlopes[signal] || 0
-  const predPrices = prices.map((_, i) => basePrice * (1 + slope * i))
-  const predParts = predPrices.map((p, i) => `${toX(i).toFixed(1)},${toY(p).toFixed(1)}`)
-  const predPath = predParts.join(' ')
-
-  // Y-axis labels
-  const yLabels = []
-  for (let i = 0; i <= 4; i++) {
-    const v = yMin + yRange * i / 4
-    yLabels.push({v, y: toY(v)})
-  }
-
-  // Determine final outcome
-  const lastActual = prices[prices.length - 1]
-  const lastPredicted = predPrices[predPrices.length - 1]
-  const finalCorrect = signal === '买入' || signal === '增持' ? lastActual >= lastPredicted :
-                       signal === '卖出' || signal === '减仓' ? lastActual <= lastPredicted : null
-  const finalChg = ((lastActual - basePrice) / basePrice * 100).toFixed(1)
-
-  const sigColors = {'买入':'#ff4757','增持':'#ff6b81','持有':'#00d2ff','减仓':'#ffa502','卖出':'#2ed573'}
-  const sc = sigColors[signal] || '#888'
-
-  return `<div style="margin:4px 0">
-    <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:2px">
-      <span style="color:${sc}">${signal} ${score}分</span>
-      <span>基准 ${basePrice.toFixed(2)}</span>
-      <span style="color:${finalCorrect === true ? '#2ed573' : finalCorrect === false ? '#ff4757' : '#888'}">
-        ${finalChg}% ${finalCorrect === true ? '✅' : finalCorrect === false ? '❌' : '➖'}
-      </span>
-    </div>
-    <svg width="${W}" height="${H}" style="background:rgba(0,0,0,.2);border-radius:4px">
-      <!-- Grid lines -->
-      ${yLabels.map((l, i) =>
-        `<line x1="15" y1="${Math.round(l.y)}" x2="${W-15}" y2="${Math.round(l.y)}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>
-         <text x="12" y="${Math.round(l.y)+3}" fill="#666" font-size="9" text-anchor="end">${l.v.toFixed(1)}</text>`
-      ).join('')}
-      <!-- X-axis dates -->
-      <text x="${W/2}" y="${H-2}" fill="#666" font-size="8" text-anchor="middle">${dates[0]} → ${dates[dates.length-1]}</text>
-      <!-- Predicted (dashed) -->
-      <polyline points="${predPath}" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1.5" stroke-dasharray="4,3"/>
-      <!-- Actual (solid) -->
-      <polyline points="${actPath}" fill="none" stroke="#4fc3f7" stroke-width="2"/>
-      <!-- Start/End dots -->
-      <circle cx="${toX(0).toFixed(1)}" cy="${toY(prices[0]).toFixed(1)}" r="2.5" fill="#4fc3f7"/>
-      <circle cx="${toX(prices.length-1).toFixed(1)}" cy="${toY(prices[prices.length-1]).toFixed(1)}" r="2.5" fill="${finalCorrect === true ? '#2ed573' : finalCorrect === false ? '#ff4757' : '#888'}"/>
-      <!-- Predicted end dot -->
-      <circle cx="${toX(prices.length-1).toFixed(1)}" cy="${toY(predPrices[predPrices.length-1]).toFixed(1)}" r="2" fill="rgba(255,255,255,.35)"/>
-      <!-- Legend -->
-      <rect x="${W-65}" y="4" width="61" height="20" rx="3" fill="rgba(0,0,0,.4)"/>
-      <line x1="${W-60}" y1="11" x2="${W-48}" y2="11" stroke="#4fc3f7" stroke-width="2"/>
-      <text x="${W-46}" y="14" fill="#4fc3f7" font-size="8">实价</text>
-      <line x1="${W-30}" y1="11" x2="${W-18}" y2="11" stroke="rgba(255,255,255,.35)" stroke-width="1.5" stroke-dasharray="2,2"/>
-      <text x="${W-16}" y="14" fill="rgba(255,255,255,.5)" font-size="8">预测</text>
-    </svg>
-  </div>`
 }
 
 function renderMinesweeper(data) {
@@ -2669,33 +2061,6 @@ setInterval(scanWatchlist, 210000)  // 3.5分钟
 setInterval(refreshWatchlistNews, 60000)
 setTimeout(refreshWatchlistNews, 2000)  // initial fetch after 2s
 
-async function loadHeatHistory() {
-  const el = document.getElementById('heatHistoryResult')
-  el.innerHTML = '<div class="loading" style="text-align:center;padding:20px"><span class="spinner"></span>加载中...</div>'
-  const data = await api('/api/sectors/heat-history')
-  if (!data || data.length === 0) {
-    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">暂无数据</div>'; return
-  }
-  let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-    '<tr style="color:#888;border-bottom:1px solid rgba(255,255,255,.06)">' +
-    '<th style="padding:8px 6px;text-align:left">#</th>' +
-    '<th style="padding:8px 6px;text-align:left">板块</th>' +
-    '<th style="padding:8px 6px;text-align:center">近5日进前30次数</th></tr>'
-  data.forEach((item, i) => {
-    const pct = Math.round(item.count / 5 * 100)
-    const c = item.count >= 4 ? '#ff4757' : item.count >= 2 ? '#ffa502' : '#888'
-    html += '<tr style="border-bottom:1px solid rgba(255,255,255,.03)">' +
-      '<td style="padding:6px;color:#888;width:30px">' + (i+1) + '</td>' +
-      '<td style="padding:6px;font-weight:600">' + item.name + '</td>' +
-      '<td style="padding:6px;text-align:center"><span style="color:' + c + ';font-weight:700">' + item.count + '</span>' +
-      '<div style="height:3px;background:rgba(255,255,255,.06);border-radius:2px;margin-top:2px">' +
-      '<div style="width:' + pct + '%;height:100%;background:' + c + ';border-radius:2px"></div></div></td></tr>'
-  })
-  html += '</table>' +
-    '<div style="font-size:10px;color:#555;text-align:center;margin-top:8px">统计范围：最近5个交易日（每次扫描记录前30）</div>'
-  el.innerHTML = html
-}
-
 
 // ═══════════════════════════════════════════════
 
@@ -2749,6 +2114,77 @@ function toggleCollapse(id) {
 }
 
 var _intradayTimer = null
+
+// ─── 量比换手率扫描 ───
+async function loadVolumeScan() {
+  // 切换到Tab时加载缓存结果，不触发扫描
+  const data = await api('/api/scan/volume')
+  if (data && data.total_scanned > 0) {
+    document.getElementById('volScanInfo').textContent = `缓存: ${data.scanned_at || '--'} | ${data.total_scanned || 0}只`
+    renderVolumeScan(data)
+  } else {
+    document.getElementById('volScanInfo').textContent = '点击🔄刷新开始扫描'
+    document.getElementById('volScanResult').innerHTML = '<div style="text-align:center;padding:30px;color:var(--dim);font-size:13px">暂无缓存数据，点击🔄刷新开始扫描</div>'
+  }
+}
+
+async function refreshVolumeScan() {
+  const el = document.getElementById('volScanResult')
+  const info = document.getElementById('volScanInfo')
+  if (!el) return
+  el.innerHTML = '<div style="text-align:center;padding:30px"><span class="spinner"></span>扫描中... (全市场~3000只)</div>'
+  info.textContent = '扫描中...'
+  const data = await apiPost('/api/scan/volume', {})
+  if (!data) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">扫描失败</div>'
+    info.textContent = '扫描失败'
+    return
+  }
+  info.textContent = `缓存: ${data.scanned_at || data.updated || '--'} | ${data.total_scanned || 0}只`
+  renderVolumeScan(data)
+}
+
+function renderVolumeScan(data) {
+  const el = document.getElementById('volScanResult')
+  if (!el) return
+  const cats = [
+    { key: 'launch',     icon: '🟢', title: '启动',     desc: '换手>5% 量比2~3',          cls: '#2ed573' },
+    { key: 'main_rise',  icon: '🟡', title: '主升征兆', desc: '换手5~10% 量比3~5',        cls: '#ffa502' },
+    { key: 'accumulate', icon: '🔴', title: '吸筹',     desc: '换手>10% 量比>5 低位',      cls: '#ff4757' },
+  ]
+  let html = ''
+  for (const cat of cats) {
+    const items = data[cat.key] || []
+    html += '<div class="card" style="border-left:3px solid ' + cat.cls + ';margin-bottom:8px">'
+    html += '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">'
+    html += '<span>' + cat.icon + ' ' + cat.title + ' <span style="font-size:11px;color:#888;font-weight:400">' + cat.desc + '</span></span>'
+    html += '<span style="font-size:13px;color:' + cat.cls + ';font-weight:600">' + items.length + '只</span>'
+    html += '</div>'
+    if (items.length === 0) {
+      html += '<div style="text-align:center;padding:12px;color:var(--dim);font-size:12px">暂无</div>'
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var s = items[i]
+        var chgCls = s.change_pct >= 0 ? 'up' : 'down'
+        var chgSign = s.change_pct >= 0 ? '+' : ''
+        var lowTag = cat.key === 'accumulate' ? '<span style="font-size:10px;color:' + cat.cls + ';margin-left:4px">📉' + s.pos52 + '%</span>' : ''
+        html += '<div class="stock-card" onclick="loadDetail(\'' + s.code + '\',\'' + s.market + '\')" style="cursor:pointer">' +
+          '<div class="sc-left">' +
+            '<div><span class="sc-name">' + s.name + '</span><span class="sc-code">' + s.code + '</span></div>' +
+            '<div class="sc-tags">' +
+              '<span class="tag" style="background:rgba(0,210,255,.1);color:var(--accent)">量比' + s.vol_ratio + '</span>' +
+              '<span class="tag" style="background:rgba(255,71,87,.1);color:var(--up)">换手' + s.turnover + '%</span>' +
+              lowTag +
+            '</div></div>' +
+          '<div class="sc-right">' +
+            '<span class="sc-price ' + chgCls + '">' + chgSign + s.change_pct + '%</span>' +
+            '<span style="font-size:12px;color:#aaa;display:block">' + s.price + '</span></div></div>'
+      }
+    }
+    html += '</div>'
+  }
+  el.innerHTML = html
+}
 
 function loadIntradayMonitor() {
   api('/api/intraday/candidates').then(function(data) {

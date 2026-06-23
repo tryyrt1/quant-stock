@@ -93,7 +93,6 @@ from engine.indicators import *
 from engine.factors import analyze_factors
 from engine.news import fetch_news, analyze_sentiment
 from engine.patterns import scan_patterns
-from engine.sectors import search_sectors, get_sector_stocks, scan_sector_stocks, fetch_hot_boards, PREDEFINED
 from engine.decision import make_decision
 
 # 活跃股票内置名单 (深市主板+沪市主板, 排除创业板/科创板/ST)
@@ -436,8 +435,8 @@ def fetch_tencent_quote(codes_str):
             'open': _f(f[5]), 'volume': _int(f[6]),
             'high': _f(f[33]), 'low': _f(f[34]),
             'change': _f(f[31]), 'changePercent': _f(f[32]),
-            'turnover': _f(f[38]), 'pe': _f(f[39]),
-            'pb': _f(f[46]),
+            'vol_ratio': _f(f[37]), 'turnover': _f(f[38]),
+            'pe': _f(f[39]), 'pb': _f(f[46]),
         })
     return {r['code']: r for r in results}
 
@@ -1498,85 +1497,6 @@ def commodity_detail():
     return jsonify(resp)
 
 
-# ─── 板块追踪 API ───
-
-@app.route('/api/sectors/list', methods=['POST'])
-def sectors_list_api():
-    """解析预设/自定义板块名称 → 板块代码"""
-    data = request.json or {}
-    names = data.get("names", PREDEFINED)
-    board_type = data.get("type", "both")
-    result = search_sectors(names, board_type)
-    return jsonify({"sectors": result})
-
-
-@app.route('/api/sectors/scan', methods=['POST'])
-def sectors_scan_api():
-    """扫描选定板块成分股的技术形态"""
-    data = request.json or {}
-    sector_codes = data.get("sector_codes", [])
-    max_stocks = data.get("max_stocks", 30)
-    if not sector_codes:
-        return jsonify({"error": "未提供板块代码"}), 400
-    result = scan_sector_stocks(sector_codes, fetch_kline, max_stocks=max_stocks)
-    return jsonify(result)
-
-
-@app.route('/api/sectors/heat-history')
-def sector_heat_history_api():
-    """返回近5日热度前15的板块及进入前10次数"""
-    heat_file = os.path.join(DATA_DIR, 'snapshots', 'sector_heat.json')
-    if not os.path.exists(heat_file):
-        return jsonify([])
-    try:
-        history = json.load(open(heat_file))
-        recent = history[-5:]
-        counts = {}
-        for day in recent:
-            for name in day.get("top10", []):
-                counts[name] = counts.get(name, 0) + 1
-        ranked = sorted(counts.items(), key=lambda x: -x[1])[:30]
-        return jsonify([{"name": n, "count": c} for n, c in ranked])
-    except:
-        return jsonify([])
-
-
-
-
-
-
-@app.route('/api/sectors/hot', methods=['POST'])
-def sectors_hot_api():
-    """全市场异动板块 Top N（优先从缓存快速读取）"""
-    data = request.json or {}
-    top_n = data.get("top_n", 30)
-    snap_path = os.path.join(DATA_DIR, 'snapshots', 'sectors.json')
-    if os.path.exists(snap_path):
-        try:
-            result = json.load(open(snap_path, encoding='utf-8'))
-            sectors = result.get("sectors", [])
-            sectors.sort(key=lambda x: -x.get("heat", 0))
-            # 缓存不够时实时补扫
-            if len(sectors) >= top_n:
-                result["sectors"] = sectors[:top_n]
-                for i, s in enumerate(result["sectors"]):
-                    s["heat_rank"] = i + 1
-                return jsonify(result)
-        except Exception as e:
-            print(f'[sectors_hot] 缓存读取失败: {e}')
-    # 缓存不足或不可用时实时扫描
-    result = fetch_hot_boards(fetch_kline, top_n=top_n)
-    return jsonify(result)
-
-
-@app.route('/api/sectors/<code>/stocks')
-def sector_stocks_api(code):
-    """快速获取板块成分股"""
-    max_s = request.args.get("max", 50, type=int)
-    stocks = get_sector_stocks(code, max_s)
-    return jsonify({"sector_code": code, "stocks": stocks, "count": len(stocks)})
-
-
 @app.route('/api/scan')
 def scan_watchlist():
     """扫描自选股，批量分析"""
@@ -1778,52 +1698,6 @@ def watchlist_news():
     })
 
 
-@app.route('/api/watchlist/predict')
-def watchlist_predict():
-    """读取今日开盘预测 + 收盘验证 + 次日方向"""
-    today = time.strftime('%Y-%m-%d')
-    intraday_file = os.path.join(DATA_DIR, 'predictions', 'intraday.json')
-    intraday = None
-    if os.path.exists(intraday_file):
-        try:
-            with open(intraday_file, 'r', encoding='utf-8') as f:
-                cached = json.load(f)
-            if cached.get('date') == today:
-                intraday = cached
-        except:
-            pass
-
-    nd_map = {}
-    try:
-        nd_file = os.path.join(DATA_DIR, 'predictions', 'nextday.json')
-        if os.path.exists(nd_file):
-            with open(nd_file, 'r', encoding='utf-8') as f:
-                for rec in json.load(f):
-                    if rec.get('date') == today:
-                        nd_map[rec['code']] = rec
-    except:
-        pass
-
-    if not intraday:
-        return jsonify({'results': [], 'updated': today, 'status': 'waiting', 'message': '等待09:25开盘预测...'})
-
-    results = []
-    for r in intraday.get('results', []):
-        nd = nd_map.get(r['code'], {})
-        results.append({
-            'code': r['code'], 'market': r.get('market', 'sh'),
-            'name': r.get('name', r['code']),
-            'price': r.get('price', 0), 'change_pct': r.get('change_pct', 0),
-            'pattern': r.get('pattern', '震荡'), 'confidence': r.get('confidence', 50),
-            'reasons': r.get('reasons', []),
-            'verified': r.get('verified', False), 'correct': r.get('correct'),
-            'next_dir': nd.get('direction'), 'next_dir_conf': nd.get('confidence', 0),
-            'gap_pct': r.get('gap_pct', 0),
-        })
-
-    return jsonify({'results': results, 'updated': intraday.get('predicted_at', ''), 'status': 'ready'})
-
-
 @app.route('/api/scan/patterns', methods=['POST'])
 def scan_patterns_api():
     """扫描自选股，识别技术形态/选股模式"""
@@ -1919,7 +1793,7 @@ def fetch_a_share_list():
         'pn': 1, 'pz': 10000, 'po': 1, 'np': 1,
         'fltt': 2, 'invt': 2, 'fid': 'f3',
         'fs': 'm:0+t:6,m:0+t:13,m:1+t:2,m:1+t:23',
-        'fields': 'f12,f14,f2,f3,f5,f9,f20'
+        'fields': 'f12,f14,f2,f3,f5,f9,f20,f23,f24'
     }
     import requests as req
     try:
@@ -1945,10 +1819,11 @@ def fetch_a_share_list():
         pe = item.get('f9', 0) or 0
         market = 'sh' if code.startswith('6') else 'sz'
         stocks.append({'code': code, 'market': market, 'name': name,
-                       'price': price, 'volume': volume, 'change_pct': change_pct, 'pe': pe})
+                       'price': price, 'volume': volume, 'change_pct': change_pct, 'pe': pe,
+                       'high52': float(item.get('f23', 0) or 0), 'low52': float(item.get('f24', 0) or 0)})
 
     if len(stocks) < 500:
-        stocks = [{"code":s[0],"market":s[1],"name":s[2],"price":10,"volume":1000000,"change_pct":0,"pe":0} for s in STATIC_STOCKS]
+        stocks = [{"code":s[0],"market":s[1],"name":s[2],"price":10,"volume":1000000,"change_pct":0,"pe":0,"high52":0,"low52":0} for s in STATIC_STOCKS]
 
     _STOCK_LIST_CACHE['time'] = now
     _STOCK_LIST_CACHE['data'] = stocks
@@ -2043,6 +1918,168 @@ def scan_market_api():
         'total_scanned': total,
         'candidates': len(candidates),
     })
+
+VOLUME_SCAN_DIR = os.path.join(DATA_DIR, 'volume_scan')
+VOLUME_SCAN_FILE = os.path.join(VOLUME_SCAN_DIR, 'volume_scan.json')
+
+@app.route('/api/scan/volume', methods=['GET'])
+def scan_volume_cached():
+    """返回缓存的上次扫描结果"""
+    if os.path.exists(VOLUME_SCAN_FILE):
+        try:
+            with open(VOLUME_SCAN_FILE, 'r', encoding='utf-8') as f:
+                return jsonify(json.load(f))
+        except:
+            pass
+    return jsonify({'launch':[], 'main_rise':[], 'accumulate':[], 'total_scanned':0, 'scanned_at':'暂无缓存'})
+
+@app.route('/api/scan/volume', methods=['POST'])
+def scan_volume_api():
+    """量比换手率扫描：全市场扫描，三档筛选"""
+    import concurrent.futures
+    stocks = fetch_a_share_list()  # 自带5分钟缓存
+
+    # 第一轮：并发批量获取腾讯行情（含换手率、成交量）
+    BATCH = 80
+    codes_batches = []
+    for i in range(0, len(stocks), BATCH):
+        batch = stocks[i:i+BATCH]
+        cs = ','.join([s['market'] + s['code'] for s in batch])
+        codes_batches.append(cs)
+
+    all_quotes = {}
+    def fetch_batch(cs):
+        try:
+            return fetch_tencent_quote(cs)
+        except:
+            return {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
+        for qs in exe.map(fetch_batch, codes_batches):
+            if qs:
+                all_quotes.update(qs)
+
+    stock_map = {s['code']: s for s in stocks}
+
+    # 第一轮筛选：换手率>=4.7% 的候选（取前300只，防K线请求过多）
+    candidates = {}
+    turnover_list = []
+    for code, q in all_quotes.items():
+        to = q.get('turnover', 0) or 0
+        if to >= 4.7:
+            turnover_list.append((code, to))
+    turnover_list.sort(key=lambda x: -x[1])
+    for code, to in turnover_list[:300]:
+        q = all_quotes.get(code, {})
+        vr_raw = q.get('vol_ratio', 0) or 0
+        price = q.get('price', 0) or 0
+        candidates[code] = {
+            'code': code, 'market': q.get('market', 'sh'),
+            'name': q.get('name', ''),
+            'price': round(price, 2),
+            'change_pct': round(q.get('changePercent', 0) or 0, 2),
+            'turnover': round(to, 2),
+            'volume': q.get('volume', 0) or 0,
+            'amount': round(vr_raw, 0),
+        }
+
+    # 第二轮：对候选股快速获取近10日K线，计算量比
+    # 量比 = 今日成交量 / 近5日平均日成交量
+    # 仅用腾讯API（快），不用baostock（慢）
+    cand_codes = list(candidates.keys())
+    vol_ratios = {}
+
+    def fast_vol_ratio(code):
+        s = candidates[code]
+        market = s.get('market', 'sh')
+        today_vol = s.get('volume', 0) or 0
+        if today_vol <= 0:
+            return code, 0
+        try:
+            import requests as _req
+            full = market + code
+            url = f'https://ifzq.gtimg.cn/appstock/app/fqkline/get?param={full},day,,,10,qfq'
+            r = _req.get(url, timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
+            if r.status_code != 200:
+                return code, 0
+            raw = r.json()
+            data = raw.get('data', {})
+            klines = data.get(full, {}).get('qfqday') or data.get(full, {}).get('day') or []
+            if len(klines) < 6:
+                return code, 0
+            vols = [_int(k[5]) for k in klines[-6:-1] if len(k) >= 6]
+            if not vols:
+                return code, 0
+            avg_vol = sum(vols) / len(vols)
+            ratio = today_vol / avg_vol if avg_vol > 0 else 0
+            return code, round(ratio, 2)
+        except:
+            return code, 0
+
+    if cand_codes:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as exe:
+            for code, ratio in exe.map(fast_vol_ratio, cand_codes):
+                if ratio > 0:
+                    vol_ratios[code] = ratio
+
+    # 三档筛选
+    launch = []
+    main_rise = []
+    accumulate = []
+
+    for code, s in candidates.items():
+        vr = vol_ratios.get(code, 0)
+        to = s['turnover']
+        if vr <= 0:
+            continue
+
+        si = stock_map.get(code, {})
+        high52 = si.get('high52', 0) or 0
+        low52 = si.get('low52', 0) or 0
+        pos52 = 0.5
+        if high52 > low52 > 0:
+            pos52 = (price - low52) / (high52 - low52)
+
+        item = {
+            'code': code, 'market': s['market'],
+            'name': s['name'], 'price': s['price'],
+            'change_pct': s['change_pct'],
+            'vol_ratio': vr,
+            'turnover': to,
+            'pos52': round(pos52 * 100, 1),
+        }
+
+        # 吸筹: 换手>10%, 量比>5, 低位(pos52 < 50%)
+        if to > 10 and vr > 5 and pos52 < 0.5:
+            accumulate.append(item)
+        # 主升征兆: 换手5~10%, 量比3~5
+        elif 5 <= to <= 10 and 3 <= vr <= 5:
+            main_rise.append(item)
+        # 启动: 换手>=4.7%, 量比2~3
+        elif to >= 4.7 and 2 <= vr <= 3:
+            launch.append(item)
+
+    launch.sort(key=lambda x: -x['vol_ratio'])
+    main_rise.sort(key=lambda x: -x['vol_ratio'])
+    accumulate.sort(key=lambda x: -x['vol_ratio'])
+
+    result = {
+        'launch': launch,
+        'main_rise': main_rise,
+        'accumulate': accumulate,
+        'scanned_at': time.strftime('%Y.%m.%d.%H.%M'),
+        'updated': time.strftime('%H:%M:%S'),
+        'total_scanned': len(all_quotes),
+    }
+
+    # 保存缓存
+    try:
+        os.makedirs(VOLUME_SCAN_DIR, exist_ok=True)
+        with open(VOLUME_SCAN_FILE, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+    return jsonify(result)
 
 
 @app.route('/api/scan/weekly')
@@ -2282,124 +2319,6 @@ def system_status_api():
         'ml_trained_at': ml_time,
         'weight_mode': '动态' if '动态' in weight_info else '固定',
     })
-CLOSING_DIR = os.path.join(DATA_DIR, 'closing')
-CLOSING_BASELINE = os.path.join(CLOSING_DIR, 'baseline.json')
-
-def _save_closing_baseline():
-    """14:15 快照股价基准"""
-    stocks = fetch_a_share_list()
-    if not stocks: return
-    candidates = [s for s in stocks if (s.get('change_pct', 0) or 0) < 9.5 and (s.get('pe', 0) or 0) >= 0]
-    candidates.sort(key=lambda x: abs(x.get('volume', 0) or 0), reverse=True)
-    candidates = candidates[:500]
-    codes_str = ','.join([s['market'] + s['code'] for s in candidates])
-    quotes = fetch_tencent_quote(codes_str) if codes_str else {}
-    baseline = {}
-    for s in candidates:
-        q = quotes.get(s['code'], {})
-        p = q.get('price', 0)
-        if p > 0:
-            baseline[s['code']] = {'name': s.get('name', s['code']), 'market': s['market'], 'price': p, 'snap_time': time.strftime('%H:%M:%S')}
-    os.makedirs(CLOSING_DIR, exist_ok=True)
-    with open(CLOSING_BASELINE, 'w', encoding='utf-8') as f:
-        json.dump({'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'baseline': baseline}, f)
-    print(f'[closing] 基准快照: {len(baseline)} 只')
-
-def _load_closing_baseline():
-    if not os.path.exists(CLOSING_BASELINE): return None
-    with open(CLOSING_BASELINE, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-@app.route('/api/scan/closing')
-def closing_scan_api():
-    """尾盘拉抬监控"""
-    force = request.args.get('force', '0') == '1'
-    now = time.localtime()
-    hm = now.tm_hour * 60 + now.tm_min
-    today = time.strftime('%Y-%m-%d')
-    start_hm = 14 * 60 + 15
-    end_hm = 15 * 60
-
-    if hm < start_hm and not force:
-        return jsonify({'status': 'waiting', 'message': f'尾盘监控(14:15-15:00) 当前{now.tm_hour}:{now.tm_min:02d}'})
-
-    # 首次调用时快照
-    baseline_data = _load_closing_baseline()
-    if force or not baseline_data or baseline_data.get('time', '').split(' ')[0] != today:
-        _save_closing_baseline()
-        baseline_data = _load_closing_baseline()
-        if not baseline_data:
-            return jsonify({'status': 'error', 'message': '基准快照失败'})
-        return jsonify({'status': 'baseline', 'message': '基准已采集，下次刷新开始监控'})
-
-    baseline = baseline_data.get('baseline', {})
-    codes_str = ','.join([f"{v['market']}{k}" for k, v in baseline.items()])
-    quotes = fetch_tencent_quote(codes_str) if codes_str else {}
-
-    spikes = []
-    for code, b in baseline.items():
-        q = quotes.get(code, {})
-        cur = q.get('price', 0)
-        if cur <= 0: continue
-        spike_pct = (cur - b['price']) / b['price'] * 100
-        if 1 < spike_pct <= 5:
-            spikes.append({
-                'code': code, 'name': b.get('name', code),
-                'price': round(cur, 2), 'spike_pct': round(spike_pct, 2),
-                'base_price': round(b['price'], 2),
-            })
-
-    # 读取已有记录，去重累积
-    today_file = os.path.join(CLOSING_DIR, f'spikes_{today}.json')
-    all_spikes = []
-    if os.path.exists(today_file):
-        try:
-            with open(today_file, 'r', encoding='utf-8') as f:
-                all_spikes = json.load(f)
-        except:
-            all_spikes = []
-    exist_codes = set(s['code'] for s in all_spikes)
-    for s in spikes:
-        if s['code'] not in exist_codes:
-            all_spikes.append(s)
-            exist_codes.add(s['code'])
-
-    if spikes:
-        os.makedirs(CLOSING_DIR, exist_ok=True)
-        with open(today_file, 'w', encoding='utf-8') as f:
-            json.dump(all_spikes, f, ensure_ascii=False, indent=2)
-
-    if hm > end_hm:
-        return jsonify({'status': 'done', 'time': time.strftime('%H:%M:%S'), 'date': today,
-                        'spikes': all_spikes, 'message': f'收盘，共{len(all_spikes)}只尾盘拉抬'})
-
-    return jsonify({'status': 'active', 'time': time.strftime('%H:%M:%S'), 'date': today,
-                    'spikes': all_spikes})
-
-@app.route('/api/closing/history')
-def closing_history_api():
-    """尾盘拉抬历史"""
-    date = request.args.get('date', '')
-    if not date:
-        # 默认返回最近2天
-        today = time.strftime('%Y-%m-%d')
-        from datetime import timedelta
-        try:
-            td = time.localtime()
-            d1 = time.strftime('%Y-%m-%d', td)
-            d2 = time.strftime('%Y-%m-%d', time.localtime(time.mktime(td) - 86400))
-            dates = [d1, d2]
-        except:
-            dates = [today]
-    else:
-        dates = [date]
-    result = {}
-    for d in dates:
-        fp = os.path.join(CLOSING_DIR, f'spikes_{d}.json')
-        if os.path.exists(fp):
-            with open(fp, 'r', encoding='utf-8') as f:
-                result[d] = json.load(f)
-    return jsonify(result)
 
 
 
@@ -2650,7 +2569,7 @@ RECORD_TIMES_15MIN = [
     (9,25),(9,40),(9,55),(10,10),(10,25),(10,40),(10,55),(11,10),(11,25),
     (13,10),(13,25),(13,40),(13,55),(14,10),(14,25),(14,40),(14,55),(15,10),
 ]
-SCHEDULE_TIMES = RECORD_TIMES_15MIN + [(15, 1)]  # 15:01 触发明日推荐计算
+SCHEDULE_TIMES = RECORD_TIMES_15MIN + [(8, 50), (15, 1)]  # 08:50 量比扫描, 15:01 触发推荐计算
 _DAILY_PICK_LOCK = threading.Lock()
 
 # ─── 每日一股 ───
@@ -3085,6 +3004,16 @@ def _run_scheduled_scans():
 
     print('[scheduler] 执行定时扫描...')
 
+    # 08:50 量比换手率扫描（盘前）
+    if hm == (8, 50):
+        try:
+            print('[scheduler] 08:50 量比换手率扫描...')
+            import requests as _req
+            _req.post('http://127.0.0.1:8080/api/scan/volume', timeout=120)
+            print('[scheduler] 量比扫描完成')
+        except Exception as e:
+            print(f'[scheduler] 量比扫描失败: {e}')
+
     try:
         # 1. 选股模式扫描
         wl = load_watchlist()
@@ -3116,34 +3045,6 @@ def _run_scheduled_scans():
     except Exception as e:
         print(f'[scheduler] 选股模式扫描失败: {e}')
 
-    try:
-        # 2. 板块追踪扫描
-        from engine.sectors import search_sectors, scan_sector_stocks, PREDEFINED
-        matched = search_sectors(PREDEFINED, 'both')
-        codes = [s['sector_code'] for s in matched if s['found']]
-        if codes:
-            result = scan_sector_stocks(codes, fetch_kline, max_stocks=20)
-            result['time'] = time.strftime('%H:%M')
-            _save_snapshot('sectors.json', result)
-            print(f'[scheduler] 板块追踪: {result["total_patterns"]} 个形态, {len(codes)} 板块')
-            # 记录本日板块热度前10
-            try:
-                secs = result.get("sectors", [])
-                secs.sort(key=lambda x: -x.get("heat", 0))
-                top10 = [s["name"] for s in secs[:30]]
-                heat_file = os.path.join(DATA_DIR, 'snapshots', 'sector_heat.json')
-                history = json.load(open(heat_file)) if os.path.exists(heat_file) else []
-                today = time.strftime('%Y-%m-%d')
-                if not history or history[-1].get("date") != today:
-                    history.append({"date": today, "top10": top10})
-                else:
-                    history[-1]["top10"] = top10  # 当日多次扫描则更新
-                history = history[-30:]
-                json.dump(history, open(heat_file, 'w'), ensure_ascii=False)
-            except Exception as e:
-                print(f'[scheduler] 热度记录失败: {e}')
-    except Exception as e:
-        print(f'[scheduler] 板块扫描失败: {e}')
     # 3. 每日一股计算（仅 09:25 和 15:01）
     hm = (now.tm_hour, now.tm_min)
     if hm in ((9, 25), (15, 1)):
@@ -3200,7 +3101,7 @@ threading.Thread(target=_scheduler_loop, daemon=True).start()
 def get_snapshots():
     """获取最新快照"""
     result = {'time': None}
-    for name in ['patterns.json', 'sectors.json']:
+    for name in ['patterns.json']:
         path = os.path.join(SNAPSHOT_DIR, name)
         if os.path.exists(path):
             try:
