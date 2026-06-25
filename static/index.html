@@ -264,13 +264,13 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   </div>
 <div id="page-weekly-picks" class="hide">
   <div class="card">
-    <div class="card-title">📊 周线选股结果</div>
-    <div style="font-size:12px;color:#aaa;margin-bottom:8px">
-      条件: 周量连续放大 | 周均线向上 | 突破前高后回调缩量
-      <span id="weeklyPicksMeta" style="margin-left:10px;color:#4fc3f7"></span>
+    <div class="card-title">📊 周线选股结果 <span style="font-size:11px;color:#888;font-weight:400">月线抬头 + 20日1涨停</span></div>
+    <div class="refresh-bar">
+      <span class="info" id="weeklyPicksMeta" style="color:#4fc3f7"></span>
+      <button onclick="scanWeeklyPicks()" style="font-size:11px;padding:4px 10px;background:rgba(0,210,255,.15);border:1px solid rgba(0,210,255,.3);color:var(--accent);border-radius:6px;cursor:pointer">🔄 更新</button>
     </div>
     <div id="weeklyPicksList" style="max-height:calc(100vh - 280px);overflow-y:auto">
-      <div class="loading" style="text-align:center;padding:20px"><span class="spinner"></span>加载中...</div>
+      <div style="text-align:center;padding:20px;color:var(--dim)">暂无数据，请点击🔄更新</div>
     </div>
   </div>
 
@@ -310,7 +310,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div class="tab active" data-tab="home" onclick="switchTab('home')"><span class="tab-icon">📊</span>自选股</div>
   <div class="tab" data-tab="dailypick" onclick="switchTab('dailypick');loadDailyPick()"><span class="tab-icon">⭐</span>每日一股</div>
   <div class="tab" data-tab="patterns" onclick="switchTab('patterns');loadSnapshots()"><span class="tab-icon">🎯</span>选股模式</div>
-	  <div class="tab" data-tab="weekly-picks" onclick="switchTab('weekly-picks');loadWeeklyPicks()"><span class="tab-icon">📊</span>周线选股</div>
+	  <div class="tab" data-tab="weekly-picks" onclick="switchTab('weekly-picks')"><span class="tab-icon">📊</span>周线选股</div>
 	  <div class="tab" data-tab="volume-scan" onclick="switchTab('volume-scan');loadVolumeScan()"><span class="tab-icon">📈</span>量比扫描</div>
 	  <div class="tab" data-tab="intraday" onclick="switchTab('intraday');loadIntradayMonitor()"><span class="tab-icon">⚡</span>实时追踪</div>
 </div>
@@ -2061,6 +2061,12 @@ setInterval(scanWatchlist, 210000)  // 3.5分钟
 setInterval(refreshWatchlistNews, 60000)
 setTimeout(refreshWatchlistNews, 2000)  // initial fetch after 2s
 
+// 预加载周线选股缓存（进入Tab时不自动更新，仅点按钮触发扫描）
+setTimeout(function(){
+  const cached = document.getElementById('weeklyPicksList')
+  if (cached && cached.innerHTML.indexOf('暂无数据') >= 0) loadWeeklyPicks()
+}, 5000)
+
 
 // ═══════════════════════════════════════════════
 
@@ -2070,11 +2076,24 @@ async function loadWeeklyPicks() {
   renderWeeklyPicks(data)
 }
 
+async function scanWeeklyPicks() {
+  const el = document.getElementById('weeklyPicksList')
+  const meta = document.getElementById('weeklyPicksMeta')
+  el.innerHTML = '<div style="text-align:center;padding:20px"><span class="spinner"></span>全市场扫描中...</div>'
+  meta.textContent = ''
+  try {
+    const data = await api('/api/scan/weekly-picks', {method:'POST'})
+    renderWeeklyPicks(data)
+  } catch(e) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:#ff6b6b">扫描失败: ' + e.message + '</div>'
+  }
+}
+
 function renderWeeklyPicks(data) {
   const el = document.getElementById('weeklyPicksList')
   const meta = document.getElementById('weeklyPicksMeta')
   if (!data || !data.picks || data.picks.length === 0) {
-    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">暂无数据</div>'
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">暂无数据，请点击🔄更新</div>'
     if (data && data.error) el.innerHTML = '<div style="text-align:center;padding:20px;color:#ff6b6b">' + data.error + '</div>'
     return
   }
@@ -2085,21 +2104,13 @@ function renderWeeklyPicks(data) {
     var p = data.picks[i]
     var cc = p.change_pct > 0 ? 'up' : (p.change_pct < 0 ? 'down' : '')
     var sign = p.change_pct > 0 ? '+' : ''
-    var sigs = ''
-    if (p.signals) {
-      for (var s = 0; s < p.signals.length; s++) {
-        sigs += '<span style="padding:1px 4px;border-radius:3px;font-size:10px;background:var(--accent);color:#000;margin-right:2px">' + p.signals[s] + '</span>'
-      }
-    }
     html += '<div onclick=\'loadDetail("' + p.code + '","' + p.market + '")\' style="display:flex;align-items:center;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px">' +
       '<span style="width:24px;color:#666">' + (i+1) + '</span>' +
       '<span style="width:110px;font-weight:500;overflow:hidden">' + (p.name || p.code) + '</span>' +
       '<span style="color:#888;font-size:11px">(' + p.code + ')</span>' +
       '<span style="margin-left:6px;font-weight:500">¥' + (p.latest_price || 0).toFixed(2) + '</span>' +
       '<span class="' + cc + '" style="margin-left:4px;font-size:11px">' + sign + (p.change_pct || 0).toFixed(1) + '%</span>' +
-      '<span style="margin-left:10px;color:#4fc3f7;font-size:11px">连增' + (p.volume_consecutive || 0) + '周</span>' +
-      '<span style="margin-left:6px;color:#888;font-size:11px">MA5:' + (p.ma5 || '-') + '</span>' +
-      sigs +
+      '<span style="margin-left:10px;color:#ff9800;font-size:11px;font-weight:500">涨停 ' + (p.zt_date || '--') + '</span>' +
     '</div>'
   }
   el.innerHTML = html

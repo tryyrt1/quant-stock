@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""全市场周线选股扫描
+"""全市场周线选股扫描 — 涨停板模式
 
 扫描全市场A股（排除科创板/北交所/ST/*/亏损股，包含创业板），
-筛选三个条件同时满足：
-  1. 周成交量连续放大 ≥ 4周
-  2. 周均线向上（MA5/MA10/MA20 上翘或多头排列）
-  3. 突破前高后回调缩量
+筛选两个条件同时满足：
+  1. 月线开始抬头（月MA5拐头向上）
+  2. 近20个交易日内有且仅有一个涨停板（日涨幅>=9.5%）
 
 用法:
     python weekly_scanner.py                     # 完整扫描
@@ -114,6 +113,74 @@ def fetch_weekly_kline(code_str, days=60):
         return []
 
 
+def fetch_monthly_kline(code_str, days=60):
+    """从腾讯ifzq获取月K线"""
+    url = f'https://ifzq.gtimg.cn/appstock/app/fqkline/get?param={code_str},month,,,{days},qfq'
+    try:
+        import requests
+        r = requests.get(url, timeout=10,
+                         headers={'User-Agent': 'Mozilla/5.0'})
+        if r.status_code != 200:
+            return []
+        raw = r.json()
+        data = raw.get('data', {})
+        klines = (data.get(code_str, {}).get('qfqmonth')
+                  or data.get(code_str, {}).get('month')
+                  or [])
+        if not klines:
+            return []
+        result = []
+        for k in klines:
+            try:
+                result.append({
+                    'date': k[0],
+                    'open': float(k[1]),
+                    'close': float(k[2]),
+                    'high': float(k[3]),
+                    'low': float(k[4]),
+                    'volume': int(float(k[5])),
+                })
+            except (ValueError, IndexError):
+                continue
+        return result
+    except Exception as e:
+        return []
+
+
+def fetch_daily_kline(code_str, days=30):
+    """从腾讯ifzq获取日K线"""
+    url = f'https://ifzq.gtimg.cn/appstock/app/fqkline/get?param={code_str},day,,,{days},qfq'
+    try:
+        import requests
+        r = requests.get(url, timeout=10,
+                         headers={'User-Agent': 'Mozilla/5.0'})
+        if r.status_code != 200:
+            return []
+        raw = r.json()
+        data = raw.get('data', {})
+        klines = (data.get(code_str, {}).get('qfqday')
+                  or data.get(code_str, {}).get('day')
+                  or [])
+        if not klines:
+            return []
+        result = []
+        for k in klines:
+            try:
+                result.append({
+                    'date': k[0],
+                    'open': float(k[1]),
+                    'close': float(k[2]),
+                    'high': float(k[3]),
+                    'low': float(k[4]),
+                    'volume': int(float(k[5])),
+                })
+            except (ValueError, IndexError):
+                continue
+        return result
+    except Exception as e:
+        return []
+
+
 # ─── 辅助函数 ─────────────────────────────────────────
 
 def _ma(arr, n):
@@ -144,35 +211,79 @@ def _strip_cur_week(kline):
     return kline
 
 
+def _strip_cur_day(daily_kline):
+    """去掉当日尚未完成的K线"""
+    if not daily_kline:
+        return daily_kline
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        if daily_kline[-1]['date'] == today:
+            return daily_kline[:-1]
+    except Exception:
+        pass
+    return daily_kline
+
+
+def check_limit_up_20days(daily_kline):
+    """条件2: 近20个交易日内有且仅有一个涨停板
+
+    去掉当日不完整K线后统计最近20个交易日，
+    涨停标准: 日收盘涨幅 >= 9.5%（主板的涨停板阈值）
+    返回: (通过否, {zt_date, zt_price, zt_pct})
+    """
+    kline = _strip_cur_day(daily_kline)
+    if len(kline) < 21:  # 20个交易日 + 前一日作为基准
+        return False, {}
+
+    recent = kline[-20:]
+    zt_count = 0
+    zt_info = {}
+
+    for i, bar in enumerate(recent):
+        prev_close = kline[-21]['close'] if i == 0 else recent[i - 1]['close']
+        pct = (bar['close'] - prev_close) / prev_close
+        if pct >= 0.095:  # 涨停板
+            zt_count += 1
+            zt_info = {
+                'zt_date': bar['date'],
+                'zt_price': round(bar['close'], 2),
+                'zt_pct': round(pct * 100, 2),
+            }
+
+    if zt_count == 1:
+        return True, zt_info
+    return False, {}
+
+
 # ─── 三个选股条件 ─────────────────────────────────────
 
 def check_volume_increase(weekly_kline):
-    """条件1: 周成交量持续放大
+    """条件2: 周线近5周内堆量 + 成交量连续放大
 
-    去掉当前不完整周后，检查成交量是否呈放大趋势：
-    - 条件A: 近3周均量 > 前3周均量 × 1.03 (量能阶梯式上升)
-    - 条件B: 近3周至少2周成交量环比递增 (量能持续活跃)
+    去掉当前不完整周后：
+    - 条件A（堆量）: 近5周均量 > 前5周均量 × 1.1 (量能明显堆积)
+    - 条件B（连续放大）: 近5周至少3周环比递增（允许1根绿柱）
     满足条件A或条件B视为通过。
     """
     kline = _strip_cur_week(weekly_kline)
-    if len(kline) < 10:
+    if len(kline) < 12:
         return False, 0
 
     vols = [k['volume'] for k in kline]
 
-    # 条件A: 近3周均量 > 前3周均量（量能趋势向上）
-    r3 = sum(vols[-3:]) / 3
-    p3 = sum(vols[-6:-3]) / 3
-    trend_up = r3 > p3 * 1.03
+    # 条件A: 近5周均量 > 前5周均量 × 1.1（量能堆积）
+    r5 = sum(vols[-5:]) / 5
+    p5 = sum(vols[-10:-5]) / 5
+    vol_pile = r5 > p5 * 1.1
 
-    # 条件B: 近3周至少2周环比递增（量能持续活跃）
-    last3_up = 0
-    for i in range(3):
-        if len(vols) >= 4 + i and vols[-4 + i] < vols[-3 + i]:
-            last3_up += 1
-    active = last3_up >= 2
+    # 条件B: 近5周至少3周环比递增（允许1根绿柱）
+    incr = 0
+    for i in range(4):
+        if vols[-5 + i] < vols[-4 + i]:
+            incr += 1
+    active = incr >= 3
 
-    # 计算实际连续递增周数（用于展示）
+    # 计算连续递增周数（用于展示）
     chain = 1
     for i in range(len(vols) - 2, -1, -1):
         if vols[i] < vols[i + 1]:
@@ -180,7 +291,7 @@ def check_volume_increase(weekly_kline):
         else:
             break
 
-    if trend_up or active:
+    if vol_pile or active:
         return True, min(chain, 12)
 
     return False, 0
@@ -258,59 +369,56 @@ def check_break_pullback(weekly_kline, lookback=26):
     return False, {}
 
 
+def check_monthly_trend(monthly_kline):
+    """条件A: 月线开始抬头 — 月MA5拐头向上"""
+    if len(monthly_kline) < 6:
+        return False, {}
+    closes = [k['close'] for k in monthly_kline]
+    ma5 = _ma(closes, 5)
+    ma5_prev = _ma(closes[:-1], 5)
+    if ma5 is None or ma5_prev is None:
+        return False, {}
+    turning_up = ma5 > ma5_prev
+    return turning_up, {
+        'month_ma5': round(ma5, 2),
+        'month_ma5_prev': round(ma5_prev, 2),
+    }
+
+
 # ─── 单只股票评估 ─────────────────────────────────────
 
-def assess_stock(code, market, name, weekly_kline):
-    """对一只股票运行三个条件，返回结果或None"""
-    if len(weekly_kline) < 30:
+def assess_stock(code, market, name, daily_kline, monthly_kline=None):
+    """对一只股票运行两个条件，返回结果或None"""
+    if len(daily_kline) < 25:
         return None
 
-    v_pass, v_count = check_volume_increase(weekly_kline)
-    if not v_pass:
+    # 条件1: 月线开始抬头
+    mt_pass, mt_info = check_monthly_trend(monthly_kline or [])
+    if not mt_pass:
         return None
 
-    ma_pass, ma_info = check_ma_upward(weekly_kline)
-    if not ma_pass:
+    # 条件2: 20日内有且仅有一个涨停板
+    daily = _strip_cur_day(daily_kline)
+    zt_pass, zt_info = check_limit_up_20days(daily_kline)
+    if not zt_pass:
         return None
 
-    bp_pass, bp_info = check_break_pullback(weekly_kline)
-    if not bp_pass:
-        return None
-
-    # 三个条件全满足
-    latest = weekly_kline[-1]
-    prev = weekly_kline[-2]
+    latest = daily[-1]
+    prev = daily[-2]
     change_pct = _pct(latest['close'], prev['close'])
 
-    # 当前价/5周均量
-    vols = [k['volume'] for k in weekly_kline]
-    vol_ma5 = _ma(vols, 5) or 1
-
-    signals = []
-    if v_pass:
-        signals.append(f"成交量{v_count}连增")
-    if ma_pass:
-        signals.append("周均线多头")
-    if bp_pass:
-        signals.append("突破回踩缩量")
-
-    # 综合评分（各30分基础+加分）
-    score = min(30, v_count * 8) + (30 if ma_pass else 0) + (30 if bp_pass else 0)
+    score = 100  # 两个条件都满足即为满分
 
     result = {
         'code': code,
         'market': market,
         'name': name,
         'latest_price': latest['close'],
-        'latest_volume': latest['volume'],
         'change_pct': change_pct,
-        'volume_consecutive': v_count,
-        'volume_ratio_ma5': round(latest['volume'] / vol_ma5, 2),
         'score': score,
-        'signals': signals,
+        'signals': ["月线抬头", "20日1涨停"],
     }
-    result.update(ma_info)
-    result.update(bp_info)
+    result.update(zt_info)
     return result
 
 
@@ -338,11 +446,13 @@ def run_scan(stocks, workers=20, max_stocks=None, resume_from=None):
             return None  # 已处理过
 
         code_str = market + code
-        kline = fetch_weekly_kline(code_str)
+        kline = fetch_daily_kline(code_str)
         if not kline:
             return {'code': code, 'error': 'no_data'}
 
-        result = assess_stock(code, market, name, kline)
+        # 获取月K线用于月线抬头判断
+        monthly = fetch_monthly_kline(code_str)
+        result = assess_stock(code, market, name, kline, monthly)
         if result:
             return {'type': 'match', 'data': result}
         return {'code': code, 'error': 'no_match'}
@@ -395,9 +505,8 @@ def save_results(results, scanned_count):
         'total_scanned': scanned_count,
         'total_matched': len(results),
         'conditions': {
-            'volume_up': '周成交量连续放大≥4周',
-            'ma_up': '周MA5/MA10/MA20上翘或多头排列',
-            'break_pullback': '突破前高后回调缩量',
+            'monthly_trend': '月线开始抬头（月MA5拐头向上）',
+            'limit_up_20d': '近20个交易日内有且仅有一个涨停板',
         },
         'picks': results,
     }

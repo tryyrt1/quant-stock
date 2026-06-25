@@ -803,6 +803,72 @@ def weekly_picks_api():
     except Exception as e:
         return jsonify({'error': str(e), 'picks': [], 'total_matched': 0})
 
+
+@app.route('/api/scan/weekly-picks', methods=['POST'])
+def scan_weekly_picks_api():
+    """全市场周线扫描：月线抬头 + 20日内1涨停"""
+    from weekly_scanner import (
+        load_and_filter_stocks, fetch_daily_kline,
+        fetch_monthly_kline, assess_stock, save_results
+    )
+    import concurrent.futures
+
+    start_time = time.time()
+
+    # 1. 加载并过滤股票
+    print("  [周线扫描] 加载股票列表...")
+    stocks = load_and_filter_stocks()
+    if not stocks:
+        return jsonify({'error': '无可用股票列表', 'picks': [], 'total_matched': 0})
+
+    total = len(stocks)
+    results = []
+    done = 0
+
+    # 2. 并发扫描全部过滤后股票
+    print(f"  [周线扫描] 开始扫描 {total} 只 ({20} 并发)...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        def process_one(s):
+            code = s['code']
+            market = s.get('market', 'sh' if code.startswith('6') else 'sz')
+            name = s.get('name', code)
+            code_str = market + code
+            daily = fetch_daily_kline(code_str)
+            monthly = fetch_monthly_kline(code_str)
+            return assess_stock(code, market, name, daily, monthly)
+
+        futures = {executor.submit(process_one, s): s for s in stocks}
+        for future in concurrent.futures.as_completed(futures):
+            done += 1
+            try:
+                r = future.result()
+                if r:
+                    results.append(r)
+            except Exception:
+                pass
+            if done % 200 == 0 or done == total:
+                elapsed = time.time() - start_time
+                print(f"  [周线扫描] {done}/{total} 已选{len(results)}只 ({elapsed:.0f}s)")
+
+    # 3. 保存
+    print(f"  [周线扫描] 完成, 找到 {len(results)} 只, 保存中...")
+    save_results(results, total)
+
+    # 4. 读取并返回
+    output_file = os.path.join(DATA_DIR, 'weekly_picks.json')
+    try:
+        with open(output_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({
+            'updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'total_scanned': total,
+            'total_matched': len(results),
+            'picks': results,
+        })
+
+
 # ─── 主力成本分析 ───
 
 def estimate_capital_cost(code, market, klines=None):
