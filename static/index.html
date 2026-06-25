@@ -2082,7 +2082,8 @@ async function scanWeeklyPicks() {
   el.innerHTML = '<div style="text-align:center;padding:20px"><span class="spinner"></span>全市场扫描中...</div>'
   meta.textContent = ''
   try {
-    const data = await api('/api/scan/weekly-picks', {method:'POST'})
+    const r = await fetch('/api/scan/weekly-picks', {method:'POST'})
+    const data = await r.json()
     renderWeeklyPicks(data)
   } catch(e) {
     el.innerHTML = '<div style="text-align:center;padding:20px;color:#ff6b6b">扫描失败: ' + e.message + '</div>'
