@@ -1988,6 +1988,9 @@ def scan_market_api():
 VOLUME_SCAN_DIR = os.path.join(DATA_DIR, 'volume_scan')
 VOLUME_SCAN_FILE = os.path.join(VOLUME_SCAN_DIR, 'volume_scan.json')
 
+SURGE_PREDICT_DIR = os.path.join(DATA_DIR, 'surge_predict')
+SURGE_PREDICT_FILE = os.path.join(SURGE_PREDICT_DIR, 'surge_predict.json')
+
 @app.route('/api/scan/volume', methods=['GET'])
 def scan_volume_cached():
     """返回缓存的上次扫描结果"""
@@ -2141,6 +2144,79 @@ def scan_volume_api():
     try:
         os.makedirs(VOLUME_SCAN_DIR, exist_ok=True)
         with open(VOLUME_SCAN_FILE, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    except:
+        pass
+
+    return jsonify(result)
+
+
+# ─── 主升浪前兆检测 ──────────────────────────────
+
+@app.route('/api/scan/surge-predict', methods=['GET'])
+def surge_predict_cached():
+    """返回缓存的主升浪预测结果"""
+    if os.path.exists(SURGE_PREDICT_FILE):
+        try:
+            with open(SURGE_PREDICT_FILE, 'r', encoding='utf-8') as f:
+                return jsonify(json.load(f))
+        except:
+            pass
+    return jsonify({'stocks': [], 'total': 0, 'scanned_at': '暂无缓存'})
+
+@app.route('/api/scan/surge-predict', methods=['POST'])
+def surge_predict_api():
+    """全市场主升浪前兆扫描 — 检测符合起爆前形态的股票"""
+    try:
+        from engine.surge_predictor import SurgePredictor
+    except ImportError:
+        return jsonify({'error': 'SurgePredictor 不可用', 'stocks': [], 'total': 0})
+
+    stocks = fetch_a_share_list()
+    if not stocks:
+        return jsonify({'stocks': [], 'total': 0})
+
+    # 排除创业板(300)/科创板(688)/北交所(920)/ST
+    def is_valid(s):
+        c = s.get('code', '')
+        n = s.get('name', '')
+        if c.startswith('300') or c.startswith('688') or c.startswith('920'):
+            return False
+        if any(kw in n for kw in ('ST', '*ST', '退', 'N')):
+            return False
+        return True
+
+    valid = [s for s in stocks if is_valid(s)]
+    print(f"  [Surge] 有效股票: {len(valid)}/{len(stocks)}", flush=True)
+
+    codes = [s['code'] for s in valid]
+    names = {s['code']: s.get('name', '') for s in valid}
+    markets = {s['code']: s.get('market', 'sh' if s['code'].startswith('6') else 'sz') for s in valid}
+
+    sp = SurgePredictor()
+    results = sp.scan(codes, stock_names=names, market_map=markets, max_results=80)
+
+    # 按准备度分组
+    urgent = [r for r in results if r['urgency'] == 'red']
+    watch = [r for r in results if r['urgency'] == 'orange']
+    other = [r for r in results if r['urgency'] not in ('red', 'orange')]
+
+    result = {
+        'urgent': urgent,
+        'watch': watch,
+        'other': other,
+        'total': len(results),
+        'total_urgent': len(urgent),
+        'total_watch': len(watch),
+        'scanned_at': datetime.now().strftime('%Y.%m.%d.%H.%M'),
+        'updated': datetime.now().strftime('%H:%M:%S'),
+        'total_scanned': len(valid),
+    }
+
+    # 保存缓存
+    try:
+        os.makedirs(SURGE_PREDICT_DIR, exist_ok=True)
+        with open(SURGE_PREDICT_FILE, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
     except:
         pass

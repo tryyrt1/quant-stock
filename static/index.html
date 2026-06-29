@@ -298,6 +298,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     </div>
   </div>
 
+    <div id="page-surge" class="hide">
+    <div class="card">
+      <div class="card-title">🔮 主升浪前兆检测 <span style="font-size:11px;color:#888;font-weight:400">基于252只历史数据形态分析</span></div>
+      <div class="refresh-bar">
+        <span class="info" id="surgeInfo">点击🔄刷新开始扫描</span>
+        <button onclick="refreshSurgePredict()" style="font-size:11px;padding:4px 10px;background:rgba(255,107,107,.15);border:1px solid rgba(255,107,107,.3);color:#ff6b6b;border-radius:6px;cursor:pointer">🔄 刷新</button>
+      </div>
+      <div id="surgeResult"></div>
+    </div>
+  </div>
+
   <div class="disclaimer">数据仅供参考，不构成投资建议 | 腾讯财经/东方财富</div>
 
   <div class="disclaimer" style="color:#555;border-top:1px solid rgba(255,255,255,.05);padding-top:8px;margin-top:0">China.柳州.Guoa</div>
@@ -313,6 +324,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 	  <div class="tab" data-tab="weekly-picks" onclick="switchTab('weekly-picks')"><span class="tab-icon">📊</span>周线选股</div>
 	  <div class="tab" data-tab="volume-scan" onclick="switchTab('volume-scan');loadVolumeScan()"><span class="tab-icon">📈</span>量比扫描</div>
 	  <div class="tab" data-tab="intraday" onclick="switchTab('intraday');loadIntradayMonitor()"><span class="tab-icon">⚡</span>实时追踪</div>
+	  <div class="tab" data-tab="surge" onclick="switchTab('surge');loadSurgePredict()"><span class="tab-icon">🔮</span>起爆预警</div>
 </div>
 
 <script>
@@ -1264,6 +1276,7 @@ function switchTab(tab) {
   document.getElementById('page-volume-scan').classList.toggle('hide',tab!=='volume-scan')
   document.getElementById('page-intraday').classList.toggle('hide',tab!=='intraday')
     document.getElementById('page-weekly-picks').classList.toggle('hide',tab!=='weekly-picks')
+	  document.getElementById('page-surge').classList.toggle('hide',tab!=='surge')
 }
 function showHome() { switchTab('home') }
 function showDetail() { switchTab('detail') }
@@ -2128,6 +2141,106 @@ function toggleCollapse(id) {
 var _intradayTimer = null
 
 // ─── 量比换手率扫描 ───
+
+async function loadSurgePredict() {
+  const data = await api('/api/scan/surge-predict')
+  if (data && data.total > 0) {
+    document.getElementById('surgeInfo').textContent = '缓存: ' + (data.scanned_at || '--') + ' | ' + (data.total_scanned || 0) + '只扫描'
+    renderSurgePredict(data)
+  } else {
+    document.getElementById('surgeInfo').textContent = '点击🔄刷新开始扫描 (全市场~3000只)'
+    document.getElementById('surgeResult').innerHTML = '<div style="text-align:center;padding:30px;color:var(--dim);font-size:13px">暂无缓存数据，点击🔄刷新</div>'
+  }
+}
+
+async function refreshSurgePredict() {
+  const el = document.getElementById('surgeResult')
+  const info = document.getElementById('surgeInfo')
+  if (!el) return
+  el.innerHTML = '<div style="text-align:center;padding:30px"><span class="spinner"></span>扫描中... (全市场~3000只，需2-3分钟)</div>'
+  info.textContent = '扫描中...'
+  const data = await apiPost('/api/scan/surge-predict', {})
+  if (!data || data.error) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">扫描失败: ' + ((data||{}).error || '未知错误') + '</div>'
+    info.textContent = '扫描失败'
+    return
+  }
+  info.textContent = '缓存: ' + (data.scanned_at || '') + ' | ' + (data.total_scanned || 0) + '只扫描 | 发现' + data.total + '只疑似'
+  renderSurgePredict(data)
+}
+
+function renderSurgePredict(data) {
+  const el = document.getElementById('surgeResult')
+  if (!el) return
+
+  const groups = [
+    { key: 'urgent', icon: '🔴', title: '即将起爆', cls: '#ff4757' },
+    { key: 'watch', icon: '🟠', title: '重点关注', cls: '#ffa502' },
+    { key: 'other', icon: '⚪', title: '观察列表', cls: '#888' },
+  ]
+
+  let html = ''
+
+  // Summary bar
+  html += '<div style="display:flex;gap:12px;margin-bottom:10px;font-size:12px">'
+  html += '<span style="color:#ff4757;font-weight:600">🔴 即将起爆 ' + (data.total_urgent||0) + '</span>'
+  html += '<span style="color:#ffa502;font-weight:600">🟠 重点关注 ' + (data.total_watch||0) + '</span>'
+  html += '<span style="color:#888">⚪ 观察 ' + ((data.total||0) - (data.total_urgent||0) - (data.total_watch||0)) + '</span>'
+  html += '</div>'
+
+  for (const g of groups) {
+    const items = data[g.key] || []
+    if (items.length === 0) continue
+
+    html += '<div class="card" style="border-left:3px solid ' + g.cls + ';margin-bottom:8px">'
+    html += '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center">'
+    html += '<span>' + g.icon + ' ' + g.title + ' <span style="font-size:11px;color:#888;font-weight:400">准备度评分排序</span></span>'
+    html += '<span style="font-size:13px;color:' + g.cls + ';font-weight:600">' + items.length + '只</span>'
+    html += '</div>'
+
+    for (const s of items) {
+      const pctCls = s.change_pct > 0 ? '#ff4757' : '#2ed573'
+      const readinessColor = s.readiness >= 70 ? '#ff4757' : s.readiness >= 50 ? '#ffa502' : '#888'
+
+      html += '<div class="stock-item" style="border-bottom:1px solid rgba(255,255,255,.04);padding:8px 0">'
+      html += '<div style="display:flex;justify-content:space-between;align-items:center">'
+      html += '<div><strong>' + (s.emoji||'') + ' ' + s.name + '</strong> <span style="color:#888;font-size:11px">' + s.code + '</span></div>'
+      html += '<div style="text-align:right"><span style="font-size:14px;font-weight:600">' + s.price + '</span>'
+      html += ' <span style="color:' + pctCls + ';font-size:11px">' + (s.change_pct > 0 ? '+' : '') + s.change_pct + '%</span></div>'
+      html += '</div>'
+
+      // Readiness bar
+      html += '<div style="display:flex;align-items:center;gap:6px;margin:4px 0">'
+      html += '<span style="font-size:11px;color:' + readinessColor + ';font-weight:600">准备度 ' + s.readiness + '</span>'
+      html += '<div style="flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px">'
+      html += '<div style="width:' + s.readiness + '%;height:100%;background:' + readinessColor + ';border-radius:2px"></div></div>'
+      html += '</div>'
+
+      // Pattern + Timing + Reason
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:3px;font-size:11px">'
+      html += '<span style="background:rgba(255,255,255,.06);padding:2px 6px;border-radius:4px;color:#aaa">' + s.pattern + '</span>'
+      html += '<span style="background:rgba(255,107,107,.1);padding:2px 6px;border-radius:4px;color:#ff6b6b;font-weight:600">' + s.timing + '</span>'
+      html += '<span style="color:#888">' + s.reason + '</span>'
+      html += '</div>'
+
+      // Metrics mini
+      if (s.metrics) {
+        html += '<div style="display:flex;gap:8px;margin-top:3px;font-size:10px;color:#666">'
+        html += '<span>振幅' + s.metrics.avg_amp + '%</span>'
+        html += '<span>阳线' + (s.metrics.up_ratio*100).toFixed(0) + '%</span>'
+        html += '<span>量比' + (s.metrics.vol_trend || 1).toFixed(2) + '</span>'
+        html += '<span>连阳' + s.metrics.consec_up + '天</span>'
+        html += '</div>'
+      }
+
+      html += '</div>'
+    }
+
+    html += '</div>'
+  }
+
+  el.innerHTML = html
+}
 async function loadVolumeScan() {
   // 切换到Tab时加载缓存结果，不触发扫描
   const data = await api('/api/scan/volume')
